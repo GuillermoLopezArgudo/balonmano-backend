@@ -1,0 +1,387 @@
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session, joinedload
+
+from app import models, schemas
+from app.auth import get_current_equipo
+from app.database import get_db
+
+router = APIRouter(prefix="/jugadas", tags=["jugadas"])
+
+
+def _load(db: Session, id_jugada, id_equipo) -> models.Jugada | None:
+    return (
+        db.query(models.Jugada)
+        .options(
+            joinedload(models.Jugada.piezas),
+            joinedload(models.Jugada.pasos).joinedload(models.JugadaPaso.posiciones),
+            joinedload(models.Jugada.pasos).joinedload(models.JugadaPaso.flechas),
+        )
+        .filter(
+            models.Jugada.id_jugada == id_jugada,
+            models.Jugada.id_equipo == id_equipo,
+        )
+        .first()
+    )
+
+
+def _out(j: models.Jugada) -> schemas.JugadaOut:
+    pasos_sorted = sorted(j.pasos or [], key=lambda p: p.orden)
+    piezas_sorted = sorted(j.piezas or [], key=lambda p: p.orden)
+    return schemas.JugadaOut(
+        id_jugada=j.id_jugada,
+        nombre=j.nombre,
+        fase=j.fase,
+        descripcion=j.descripcion,
+        creado_en=j.creado_en,
+        actualizado_en=j.actualizado_en,
+        piezas=[
+            schemas.JugadaPiezaOut(
+                id_pieza=p.id_pieza,
+                etiqueta=p.etiqueta,
+                color=p.color,
+                id_jugador=p.id_jugador,
+                orden=p.orden,
+            )
+            for p in piezas_sorted
+        ],
+        pasos=[
+            schemas.JugadaPasoOut(
+                id_paso=paso.id_paso,
+                orden=paso.orden,
+                titulo=paso.titulo,
+                balon_x=paso.balon_x,
+                balon_y=paso.balon_y,
+                id_pieza_balon=paso.id_pieza_balon,
+                posiciones=[
+                    schemas.JugadaPosicionOut(
+                        id_pieza=pos.id_pieza,
+                        x=pos.x,
+                        y=pos.y,
+                    )
+                    for pos in (paso.posiciones or [])
+                ],
+                flechas=[
+                    schemas.JugadaFlechaOut(
+                        id_flecha=f.id_flecha,
+                        id_pieza=f.id_pieza,
+                        x1=f.x1,
+                        y1=f.y1,
+                        x2=f.x2,
+                        y2=f.y2,
+                        tipo=getattr(f, "tipo", None) or "movimiento",
+                    )
+                    for f in (paso.flechas or [])
+                ],
+            )
+            for paso in pasos_sorted
+        ],
+    )
+
+
+def _list_out(j: models.Jugada) -> schemas.JugadaListOut:
+    return schemas.JugadaListOut(
+        id_jugada=j.id_jugada,
+        nombre=j.nombre,
+        fase=j.fase,
+        descripcion=j.descripcion,
+        num_pasos=len(j.pasos or []),
+        num_piezas=len(j.piezas or []),
+        creado_en=j.creado_en,
+        actualizado_en=j.actualizado_en,
+    )
+
+
+def _default_contenido(fase: str) -> tuple[list[schemas.JugadaPiezaIn], list[schemas.JugadaPasoIn]]:
+    """Formación inicial razonable si crean vacía."""
+    if fase == "defensa":
+        layout = [
+            ("EI", "#93c5fd", 8, 78),
+            ("LI", "#93c5fd", 20, 55),
+            ("CE", "#bfdbfe", 38, 42),
+            ("PI", "#bfdbfe", 62, 42),
+            ("LD", "#93c5fd", 80, 55),
+            ("ED", "#93c5fd", 92, 78),
+            ("PO", "#fbbf24", 50, 92),
+        ]
+    else:
+        layout = [
+            ("CE", "#a3e635", 50, 12),
+            ("LD", "#a3e635", 28, 32),
+            ("LI", "#a3e635", 72, 32),
+            ("PI", "#d9f99d", 50, 40),
+            ("ED", "#a3e635", 14, 82),
+            ("EI", "#a3e635", 86, 82),
+        ]
+    piezas = []
+    posiciones = []
+    for i, (eti, color, x, y) in enumerate(layout):
+        pid = uuid.uuid4()
+        piezas.append(
+            schemas.JugadaPiezaIn(id_pieza=pid, etiqueta=eti, color=color, orden=i)
+        )
+        posiciones.append(schemas.JugadaPosicionIn(id_pieza=pid, x=x, y=y))
+    first = posiciones[0]
+    paso = schemas.JugadaPasoIn(
+        id_paso=uuid.uuid4(),
+        orden=0,
+        titulo="Inicio",
+        posiciones=posiciones,
+        balon_x=first.x,
+        balon_y=first.y,
+        id_pieza_balon=first.id_pieza,
+    )
+    return piezas, [paso]
+
+
+def _aplicar_contenido(
+    db: Session,
+    jugada: models.Jugada,
+    piezas_in: list[schemas.JugadaPiezaIn],
+    pasos_in: list[schemas.JugadaPasoIn],
+) -> None:
+    if len(pasos_in) > 200:
+        raise HTTPException(status_code=400, detail="Máximo 200 pasos")
+    if len(piezas_in) > 20:
+        raise HTTPException(status_code=400, detail="Máximo 20 piezas")
+
+    # Borrar hijos (cascade delete-orphan al clear)
+    jugada.pasos.clear()
+    jugada.piezas.clear()
+    db.flush()
+
+    id_map: dict[uuid.UUID, uuid.UUID] = {}
+    for i, p in enumerate(piezas_in):
+        new_id = uuid.uuid4()
+        if p.id_pieza:
+            id_map[p.id_pieza] = new_id
+        pieza = models.JugadaPieza(
+            id_pieza=new_id,
+            id_jugada=jugada.id_jugada,
+            etiqueta=p.etiqueta.strip()[:40] or f"P{i+1}",
+            color=p.color,
+            id_jugador=p.id_jugador,
+            orden=p.orden if p.orden is not None else i,
+        )
+        db.add(pieza)
+        jugada.piezas.append(pieza)
+
+    pieza_ids = {pz.id_pieza for pz in jugada.piezas}
+
+    for paso_in in sorted(pasos_in, key=lambda x: x.orden):
+        balon_pieza = None
+        if paso_in.id_pieza_balon:
+            balon_pieza = id_map.get(paso_in.id_pieza_balon, paso_in.id_pieza_balon)
+            if balon_pieza not in pieza_ids:
+                balon_pieza = None
+        paso = models.JugadaPaso(
+            id_paso=paso_in.id_paso or uuid.uuid4(),
+            id_jugada=jugada.id_jugada,
+            orden=paso_in.orden,
+            titulo=(paso_in.titulo or "").strip() or None,
+            balon_x=paso_in.balon_x,
+            balon_y=paso_in.balon_y,
+            id_pieza_balon=balon_pieza,
+        )
+        db.add(paso)
+        db.flush()
+        for pos in paso_in.posiciones:
+            pid = id_map.get(pos.id_pieza, pos.id_pieza)
+            if pid not in pieza_ids:
+                continue
+            db.add(
+                models.JugadaPosicion(
+                    id_paso=paso.id_paso,
+                    id_pieza=pid,
+                    x=max(0, min(100, pos.x)),
+                    y=max(0, min(100, pos.y)),
+                )
+            )
+        for fle in paso_in.flechas:
+            pid = id_map.get(fle.id_pieza, fle.id_pieza)
+            if pid not in pieza_ids:
+                continue
+            tipo = fle.tipo if fle.tipo in ("movimiento", "pase", "lanzamiento") else "movimiento"
+            db.add(
+                models.JugadaFlecha(
+                    id_paso=paso.id_paso,
+                    id_pieza=pid,
+                    x1=max(0, min(100, fle.x1)),
+                    y1=max(0, min(100, fle.y1)),
+                    x2=max(0, min(100, fle.x2)),
+                    y2=max(0, min(100, fle.y2)),
+                    tipo=tipo,
+                )
+            )
+        jugada.pasos.append(paso)
+
+
+@router.get("/", response_model=list[schemas.JugadaListOut])
+def listar(
+    fase: str | None = None,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_current_equipo),
+):
+    q = (
+        db.query(models.Jugada)
+        .options(joinedload(models.Jugada.pasos), joinedload(models.Jugada.piezas))
+        .filter(models.Jugada.id_equipo == equipo.id_equipo)
+    )
+    if fase in ("ataque", "defensa"):
+        q = q.filter(models.Jugada.fase == fase)
+    filas = q.order_by(models.Jugada.actualizado_en.desc()).all()
+    return [_list_out(j) for j in filas]
+
+
+@router.get("/{id_jugada}", response_model=schemas.JugadaOut)
+def obtener(
+    id_jugada: str,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_current_equipo),
+):
+    j = _load(db, id_jugada, equipo.id_equipo)
+    if not j:
+        raise HTTPException(status_code=404, detail="Jugada no encontrada")
+    return _out(j)
+
+
+@router.post("/", response_model=schemas.JugadaOut, status_code=201)
+def crear(
+    payload: schemas.JugadaCreate,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_current_equipo),
+):
+    piezas = payload.piezas
+    pasos = payload.pasos
+    if not piezas or not pasos:
+        piezas, pasos = _default_contenido(payload.fase)
+
+    jugada = models.Jugada(
+        id_equipo=equipo.id_equipo,
+        nombre=payload.nombre.strip(),
+        fase=payload.fase,
+        descripcion=(payload.descripcion or "").strip() or None,
+    )
+    db.add(jugada)
+    db.flush()
+    _aplicar_contenido(db, jugada, piezas, pasos)
+    db.commit()
+    loaded = _load(db, jugada.id_jugada, equipo.id_equipo)
+    return _out(loaded)
+
+
+@router.put("/{id_jugada}", response_model=schemas.JugadaOut)
+def actualizar(
+    id_jugada: str,
+    payload: schemas.JugadaUpdate,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_current_equipo),
+):
+    jugada = _load(db, id_jugada, equipo.id_equipo)
+    if not jugada:
+        raise HTTPException(status_code=404, detail="Jugada no encontrada")
+
+    if payload.nombre is not None:
+        jugada.nombre = payload.nombre.strip()
+    if payload.fase is not None:
+        jugada.fase = payload.fase
+    if payload.descripcion is not None:
+        jugada.descripcion = payload.descripcion.strip() or None
+
+    if payload.piezas is not None and payload.pasos is not None:
+        _aplicar_contenido(db, jugada, payload.piezas, payload.pasos)
+    elif payload.piezas is not None or payload.pasos is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Al actualizar el contenido envía piezas y pasos juntos",
+        )
+
+    db.commit()
+    loaded = _load(db, jugada.id_jugada, equipo.id_equipo)
+    return _out(loaded)
+
+
+@router.post("/{id_jugada}/copiar", response_model=schemas.JugadaOut, status_code=201)
+def copiar(
+    id_jugada: str,
+    payload: schemas.JugadaCopiarIn | None = None,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_current_equipo),
+):
+    origen = _load(db, id_jugada, equipo.id_equipo)
+    if not origen:
+        raise HTTPException(status_code=404, detail="Jugada no encontrada")
+
+    nombre = (payload.nombre if payload and payload.nombre else None) or f"{origen.nombre} (copia)"
+    full = _out(origen)
+
+    piezas_in = [
+        schemas.JugadaPiezaIn(
+            id_pieza=p.id_pieza,
+            etiqueta=p.etiqueta,
+            color=p.color,
+            id_jugador=p.id_jugador,
+            orden=p.orden,
+        )
+        for p in full.piezas
+    ]
+    pasos_in = [
+        schemas.JugadaPasoIn(
+            orden=paso.orden,
+            titulo=paso.titulo,
+            balon_x=paso.balon_x,
+            balon_y=paso.balon_y,
+            id_pieza_balon=paso.id_pieza_balon,
+            posiciones=[
+                schemas.JugadaPosicionIn(id_pieza=pos.id_pieza, x=pos.x, y=pos.y)
+                for pos in paso.posiciones
+            ],
+            flechas=[
+                schemas.JugadaFlechaIn(
+                    id_pieza=f.id_pieza,
+                    x1=f.x1,
+                    y1=f.y1,
+                    x2=f.x2,
+                    y2=f.y2,
+                    tipo=f.tipo or "movimiento",
+                )
+                for f in paso.flechas
+            ],
+        )
+        for paso in full.pasos
+    ]
+
+    nueva = models.Jugada(
+        id_equipo=equipo.id_equipo,
+        nombre=nombre[:120],
+        fase=origen.fase,
+        descripcion=origen.descripcion,
+    )
+    db.add(nueva)
+    db.flush()
+    _aplicar_contenido(db, nueva, piezas_in, pasos_in)
+    db.commit()
+    loaded = _load(db, nueva.id_jugada, equipo.id_equipo)
+    return _out(loaded)
+
+
+@router.delete("/{id_jugada}", status_code=204)
+def eliminar(
+    id_jugada: str,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_current_equipo),
+):
+    jugada = (
+        db.query(models.Jugada)
+        .filter(
+            models.Jugada.id_jugada == id_jugada,
+            models.Jugada.id_equipo == equipo.id_equipo,
+        )
+        .first()
+    )
+    if not jugada:
+        raise HTTPException(status_code=404, detail="Jugada no encontrada")
+    db.delete(jugada)
+    db.commit()
+    return None

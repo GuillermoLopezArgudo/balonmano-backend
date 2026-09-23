@@ -16,7 +16,7 @@ ALLOWED = {
     "image/webp": ".webp",
 }
 MAX_BYTES = 2 * 1024 * 1024
-TIPOS = {"jugador": "jugadores", "escudo": "escudos"}
+TIPOS = {"jugador": "jugadores", "escudo": "escudos", "partido": "partidos"}
 
 
 class UploadOut(BaseModel):
@@ -37,7 +37,7 @@ async def upload_imagen(
     _: models.Equipo = Depends(get_current_equipo),
 ):
     if tipo not in TIPOS:
-        raise HTTPException(status_code=400, detail="tipo debe ser jugador o escudo")
+        raise HTTPException(status_code=400, detail="tipo debe ser jugador, escudo o partido")
 
     content_type = (file.content_type or "").lower()
     if content_type not in ALLOWED:

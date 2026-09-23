@@ -6,9 +6,11 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
 )
@@ -47,6 +49,12 @@ class Equipo(Base):
     )
     temporadas_propias: Mapped[list["Temporada"]] = relationship(
         back_populates="equipo_owner", foreign_keys="Temporada.id_equipo"
+    )
+    alineaciones: Mapped[list["AlineacionPlantilla"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
+    )
+    jugadas: Mapped[list["Jugada"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
     )
 
 
@@ -107,6 +115,29 @@ class Rival(Base):
 
     equipo: Mapped["Equipo"] = relationship(back_populates="rivales")
     partidos: Mapped[list["Partido"]] = relationship(back_populates="rival")
+    jugadoras: Mapped[list["RivalJugador"]] = relationship(
+        back_populates="rival", cascade="all, delete-orphan"
+    )
+
+
+class RivalJugador(Base):
+    """Plantilla ligera del rival (dorsales reutilizables entre partidos)."""
+
+    __tablename__ = "rival_jugador"
+    __table_args__ = (
+        UniqueConstraint("id_rival", "dorsal", name="uq_rival_jugador_dorsal"),
+    )
+
+    id_rival_jugador: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_rival: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("rival.id_rival", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dorsal: Mapped[int] = mapped_column(Integer, nullable=False)
+    nombre: Mapped[str | None] = mapped_column(String(120))
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    rival: Mapped["Rival"] = relationship(back_populates="jugadoras")
+    acciones: Mapped[list["Accion"]] = relationship(back_populates="rival_jugador")
 
 
 class EquipoTemporada(Base):
@@ -234,6 +265,7 @@ class Partido(Base):
     jornada: Mapped[int | None] = mapped_column(Integer)
     pabellon: Mapped[str | None] = mapped_column(String(200))
     competicion: Mapped[str | None] = mapped_column(String(100))
+    img_portada: Mapped[str | None] = mapped_column(String(255))
     goles_local: Mapped[int] = mapped_column(Integer, default=0)
     goles_visitante: Mapped[int] = mapped_column(Integer, default=0)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="programado")
@@ -284,8 +316,51 @@ class Convocatoria(Base):
         Uuid, ForeignKey("jugador.id_jugador", ondelete="CASCADE"), nullable=False
     )
     rol: Mapped[str] = mapped_column(String(20), nullable=False, default="convocado")
+    zona_campo: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    zona_ataque: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    zona_defensa: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     partido: Mapped["Partido"] = relationship(back_populates="convocatoria")
+    jugador: Mapped["Jugador"] = relationship()
+
+
+class AlineacionPlantilla(Base):
+    __tablename__ = "alineacion_plantilla"
+
+    id_alineacion: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    nombre: Mapped[str] = mapped_column(String(120), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="ataque")
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="alineaciones")
+    items: Mapped[list["AlineacionPlantillaItem"]] = relationship(
+        back_populates="plantilla", cascade="all, delete-orphan"
+    )
+
+
+class AlineacionPlantillaItem(Base):
+    __tablename__ = "alineacion_plantilla_item"
+    __table_args__ = (
+        UniqueConstraint("id_alineacion", "zona_campo", name="uq_alineacion_zona"),
+        UniqueConstraint("id_alineacion", "id_jugador", name="uq_alineacion_jugador"),
+    )
+
+    id_item: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_alineacion: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("alineacion_plantilla.id_alineacion", ondelete="CASCADE"), nullable=False
+    )
+    id_jugador: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugador.id_jugador", ondelete="CASCADE"), nullable=False
+    )
+    zona_campo: Mapped[str] = mapped_column(String(30), nullable=False)
+
+    plantilla: Mapped["AlineacionPlantilla"] = relationship(back_populates="items")
     jugador: Mapped["Jugador"] = relationship()
 
 
@@ -314,6 +389,7 @@ class EstadisticaJugador(Base):
     amarillas: Mapped[int] = mapped_column(Integer, default=0)
     exclusiones_2min: Mapped[int] = mapped_column(Integer, default=0)
     rojas: Mapped[int] = mapped_column(Integer, default=0)
+    azules: Mapped[int] = mapped_column(Integer, default=0)
 
     partido: Mapped["Partido"] = relationship(back_populates="estadisticas_jugador")
     jugador: Mapped["Jugador"] = relationship(back_populates="estadisticas")
@@ -409,10 +485,16 @@ class Accion(Base):
     minuto: Mapped[int] = mapped_column(Integer, nullable=False)
     segundo: Mapped[int] = mapped_column(Integer, default=0)
     zona: Mapped[str | None] = mapped_column(String(50))
+    zona_porteria: Mapped[str | None] = mapped_column(String(50))
+    es_contraataque: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    id_rival_jugador: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("rival_jugador.id_rival_jugador", ondelete="SET NULL"), nullable=True
+    )
 
     partido: Mapped["Partido"] = relationship(back_populates="acciones")
     jugador: Mapped["Jugador"] = relationship(back_populates="acciones")
     tipo_accion: Mapped["TipoAccion"] = relationship(back_populates="acciones")
+    rival_jugador: Mapped["RivalJugador | None"] = relationship(back_populates="acciones")
 
 
 class MiembroClub(Base):
@@ -441,3 +523,112 @@ class MiembroClub(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     equipo: Mapped["Equipo"] = relationship(back_populates="miembros")
+
+
+class Jugada(Base):
+    __tablename__ = "jugada"
+    __table_args__ = (
+        CheckConstraint("fase IN ('ataque', 'defensa')", name="ck_jugada_fase"),
+    )
+
+    id_jugada: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    nombre: Mapped[str] = mapped_column(String(120), nullable=False)
+    fase: Mapped[str] = mapped_column(String(20), nullable=False, default="ataque")
+    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="jugadas")
+    piezas: Mapped[list["JugadaPieza"]] = relationship(
+        back_populates="jugada", cascade="all, delete-orphan", order_by="JugadaPieza.orden"
+    )
+    pasos: Mapped[list["JugadaPaso"]] = relationship(
+        back_populates="jugada", cascade="all, delete-orphan", order_by="JugadaPaso.orden"
+    )
+
+
+class JugadaPieza(Base):
+    __tablename__ = "jugada_pieza"
+
+    id_pieza: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_jugada: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugada.id_jugada", ondelete="CASCADE"), nullable=False, index=True
+    )
+    etiqueta: Mapped[str] = mapped_column(String(40), nullable=False)
+    color: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    id_jugador: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("jugador.id_jugador", ondelete="SET NULL"), nullable=True
+    )
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    jugada: Mapped["Jugada"] = relationship(back_populates="piezas")
+
+
+class JugadaPaso(Base):
+    __tablename__ = "jugada_paso"
+    __table_args__ = (
+        UniqueConstraint("id_jugada", "orden", name="uq_jugada_paso_orden"),
+    )
+
+    id_paso: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_jugada: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugada.id_jugada", ondelete="CASCADE"), nullable=False, index=True
+    )
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    titulo: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    balon_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    balon_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    id_pieza_balon: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("jugada_pieza.id_pieza", ondelete="SET NULL"), nullable=True
+    )
+
+    jugada: Mapped["Jugada"] = relationship(back_populates="pasos")
+    posiciones: Mapped[list["JugadaPosicion"]] = relationship(
+        back_populates="paso", cascade="all, delete-orphan"
+    )
+    flechas: Mapped[list["JugadaFlecha"]] = relationship(
+        back_populates="paso", cascade="all, delete-orphan"
+    )
+
+
+class JugadaPosicion(Base):
+    __tablename__ = "jugada_posicion"
+    __table_args__ = (
+        UniqueConstraint("id_paso", "id_pieza", name="uq_jugada_posicion_pieza"),
+    )
+
+    id_posicion: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_paso: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugada_paso.id_paso", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_pieza: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugada_pieza.id_pieza", ondelete="CASCADE"), nullable=False
+    )
+    x: Mapped[float] = mapped_column(Float, nullable=False)
+    y: Mapped[float] = mapped_column(Float, nullable=False)
+
+    paso: Mapped["JugadaPaso"] = relationship(back_populates="posiciones")
+
+
+class JugadaFlecha(Base):
+    __tablename__ = "jugada_flecha"
+
+    id_flecha: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_paso: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugada_paso.id_paso", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_pieza: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugada_pieza.id_pieza", ondelete="CASCADE"), nullable=False
+    )
+    x1: Mapped[float] = mapped_column(Float, nullable=False)
+    y1: Mapped[float] = mapped_column(Float, nullable=False)
+    x2: Mapped[float] = mapped_column(Float, nullable=False)
+    y2: Mapped[float] = mapped_column(Float, nullable=False)
+    tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="movimiento")
+
+    paso: Mapped["JugadaPaso"] = relationship(back_populates="flechas")

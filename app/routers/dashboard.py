@@ -10,6 +10,44 @@ from app.routers.partidos import _partido_out
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
+# Zonas de origen que se marcan en Directo (pista) + contraataque (checkbox)
+ZONAS_PISTA_ORDEN = (
+    "ext_izq",
+    "6m_izq",
+    "6m_cen",
+    "6m_der",
+    "ext_der",
+    "7m",
+    "9m_izq",
+    "9m_cen",
+    "9m_der",
+    "contraataque",
+)
+
+
+def _zona_canonica(zona: str | None) -> str | None:
+    if not zona:
+        return None
+    z = zona.lower().strip()
+    aliases = {
+        "6m": "6m_cen",
+        "pivote": "6m_cen",
+        "9m": "9m_cen",
+        "frontal": "9m_cen",
+        "interior": "9m_cen",
+        "extremo": "ext_izq",
+    }
+    z = aliases.get(z, z)
+    return z if z in ZONAS_PISTA_ORDEN else None
+
+
+def _zonas_vacias_tiro() -> dict:
+    return {k: {"lanzamientos": 0, "goles": 0} for k in ZONAS_PISTA_ORDEN}
+
+
+def _zonas_vacias_parada() -> dict:
+    return {k: {"paradas": 0, "lanzamientos": 0} for k in ZONAS_PISTA_ORDEN}
+
 
 @router.get("/", response_model=schemas.DashboardOut)
 def resumen(
@@ -146,12 +184,30 @@ def jugador_detalle(
             func.coalesce(func.sum(models.EstadisticaJugador.asistencias), 0),
             func.coalesce(func.sum(models.EstadisticaJugador.minutos_jugados), 0),
             func.count(models.EstadisticaJugador.id_estadistica),
+            func.coalesce(func.sum(models.EstadisticaJugador.perdidas), 0),
+            func.coalesce(func.sum(models.EstadisticaJugador.amarillas), 0),
+            func.coalesce(func.sum(models.EstadisticaJugador.exclusiones_2min), 0),
+            func.coalesce(func.sum(models.EstadisticaJugador.rojas), 0),
+            func.coalesce(func.sum(models.EstadisticaJugador.azules), 0),
         )
         .filter(models.EstadisticaJugador.id_jugador == id_jugador)
         .one()
     )
-    goles, lanzamientos, asistencias, minutos, partidos_campo = (int(x) for x in totales)
+    (
+        goles,
+        lanzamientos,
+        asistencias,
+        minutos,
+        partidos_campo,
+        perdidas,
+        amarillas,
+        exclusiones_2min,
+        rojas,
+        azules,
+    ) = (int(x) for x in totales)
     efectividad = round((goles / lanzamientos) * 100, 1) if lanzamientos else 0.0
+    denom_perd = lanzamientos + perdidas
+    pct_perdidas = round((perdidas / denom_perd) * 100, 1) if denom_perd else 0.0
 
     por_partido = (
         db.query(
@@ -171,24 +227,54 @@ def jugador_detalle(
         .filter(models.EstadisticaLanzamiento.id_jugador == id_jugador)
         .all()
     )
-    zonas = {
-        "6m": {"lanzamientos": 0, "goles": 0},
-        "9m": {"lanzamientos": 0, "goles": 0},
-        "7m": {"lanzamientos": 0, "goles": 0},
-        "extremo": {"lanzamientos": 0, "goles": 0},
-        "contraataque": {"lanzamientos": 0, "goles": 0},
-    }
-    for z in zonas_row:
-        zonas["6m"]["lanzamientos"] += z.lanzamientos_6m
-        zonas["6m"]["goles"] += z.goles_6m
-        zonas["9m"]["lanzamientos"] += z.lanzamientos_9m
-        zonas["9m"]["goles"] += z.goles_9m
-        zonas["7m"]["lanzamientos"] += z.lanzamientos_7m
-        zonas["7m"]["goles"] += z.goles_7m
-        zonas["extremo"]["lanzamientos"] += z.lanzamientos_extremo
-        zonas["extremo"]["goles"] += z.goles_extremo
-        zonas["contraataque"]["lanzamientos"] += z.lanzamientos_contraataque
-        zonas["contraataque"]["goles"] += z.goles_contraataque
+    # Preferir desglose fino desde acciones (6I/6C/6D…); fallback a agregados legacy
+    zonas = _zonas_vacias_tiro()
+    acciones_tiro = (
+        db.query(models.Accion, models.TipoAccion.nombre)
+        .join(models.TipoAccion, models.TipoAccion.id_tipo_accion == models.Accion.id_tipo_accion)
+        .filter(
+            models.Accion.id_jugador == id_jugador,
+            models.Accion.zona.isnot(None),
+        )
+        .all()
+    )
+    hubo_acciones_zona = False
+    for accion, tipo_nombre in acciones_tiro:
+        nombre = (tipo_nombre or "").lower()
+        es_gol = "gol" in nombre and "recibid" not in nombre
+        es_fallado = (
+            "lanzamiento" in nombre
+            or "fallado" in nombre
+            or "fuera" in nombre
+            or "poste" in nombre
+        )
+        if not es_gol and not es_fallado:
+            continue
+        key = _zona_canonica(accion.zona)
+        if key:
+            hubo_acciones_zona = True
+            zonas[key]["lanzamientos"] += 1
+            if es_gol:
+                zonas[key]["goles"] += 1
+        if getattr(accion, "es_contraataque", False):
+            hubo_acciones_zona = True
+            zonas["contraataque"]["lanzamientos"] += 1
+            if es_gol:
+                zonas["contraataque"]["goles"] += 1
+
+    if not hubo_acciones_zona:
+        # Datos antiguos solo en estadistica_lanzamiento (sin lado)
+        for z in zonas_row:
+            zonas["6m_cen"]["lanzamientos"] += z.lanzamientos_6m
+            zonas["6m_cen"]["goles"] += z.goles_6m
+            zonas["9m_cen"]["lanzamientos"] += z.lanzamientos_9m
+            zonas["9m_cen"]["goles"] += z.goles_9m
+            zonas["7m"]["lanzamientos"] += z.lanzamientos_7m
+            zonas["7m"]["goles"] += z.goles_7m
+            zonas["ext_izq"]["lanzamientos"] += z.lanzamientos_extremo
+            zonas["ext_izq"]["goles"] += z.goles_extremo
+            zonas["contraataque"]["lanzamientos"] += z.lanzamientos_contraataque
+            zonas["contraataque"]["goles"] += z.goles_contraataque
 
     porteros = (
         db.query(models.EstadisticaPortero)
@@ -197,25 +283,49 @@ def jugador_detalle(
     )
     paradas = sum(p.paradas for p in porteros)
     recibidos = sum(p.lanzamientos_recibidos for p in porteros)
+    goles_recibidos = sum(p.goles_recibidos for p in porteros)
     efectividad_paradas = round((paradas / recibidos) * 100, 1) if recibidos else 0.0
-    mapa_paradas = {
-        "6m": {"paradas": 0, "lanzamientos": 0},
-        "9m": {"paradas": 0, "lanzamientos": 0},
-        "7m": {"paradas": 0, "lanzamientos": 0},
-        "extremo": {"paradas": 0, "lanzamientos": 0},
-        "contraataque": {"paradas": 0, "lanzamientos": 0},
-    }
-    for p in porteros:
-        mapa_paradas["6m"]["paradas"] += p.paradas_6m
-        mapa_paradas["6m"]["lanzamientos"] += p.lanzamientos_6m
-        mapa_paradas["9m"]["paradas"] += p.paradas_9m
-        mapa_paradas["9m"]["lanzamientos"] += p.lanzamientos_9m
-        mapa_paradas["7m"]["paradas"] += p.paradas_7m
-        mapa_paradas["7m"]["lanzamientos"] += p.lanzamientos_7m
-        mapa_paradas["extremo"]["paradas"] += p.paradas_extremo
-        mapa_paradas["extremo"]["lanzamientos"] += p.lanzamientos_extremo
-        mapa_paradas["contraataque"]["paradas"] += p.paradas_contraataque
-        mapa_paradas["contraataque"]["lanzamientos"] += p.lanzamientos_contraataque
+    mapa_paradas = _zonas_vacias_parada()
+    acciones_gk = (
+        db.query(models.Accion, models.TipoAccion.nombre)
+        .join(models.TipoAccion, models.TipoAccion.id_tipo_accion == models.Accion.id_tipo_accion)
+        .filter(
+            models.Accion.id_jugador == id_jugador,
+            models.Accion.zona.isnot(None),
+        )
+        .all()
+    )
+    hubo_gk_zona = False
+    for accion, tipo_nombre in acciones_gk:
+        nombre = (tipo_nombre or "").lower()
+        es_parada = "parada" in nombre
+        es_gol_recibido = "gol" in nombre and "recibid" in nombre
+        if not es_parada and not es_gol_recibido:
+            continue
+        key = _zona_canonica(accion.zona)
+        if key:
+            hubo_gk_zona = True
+            mapa_paradas[key]["lanzamientos"] += 1
+            if es_parada:
+                mapa_paradas[key]["paradas"] += 1
+        if getattr(accion, "es_contraataque", False):
+            hubo_gk_zona = True
+            mapa_paradas["contraataque"]["lanzamientos"] += 1
+            if es_parada:
+                mapa_paradas["contraataque"]["paradas"] += 1
+
+    if not hubo_gk_zona:
+        for p in porteros:
+            mapa_paradas["6m_cen"]["paradas"] += p.paradas_6m
+            mapa_paradas["6m_cen"]["lanzamientos"] += p.lanzamientos_6m
+            mapa_paradas["9m_cen"]["paradas"] += p.paradas_9m
+            mapa_paradas["9m_cen"]["lanzamientos"] += p.lanzamientos_9m
+            mapa_paradas["7m"]["paradas"] += p.paradas_7m
+            mapa_paradas["7m"]["lanzamientos"] += p.lanzamientos_7m
+            mapa_paradas["ext_izq"]["paradas"] += p.paradas_extremo
+            mapa_paradas["ext_izq"]["lanzamientos"] += p.lanzamientos_extremo
+            mapa_paradas["contraataque"]["paradas"] += p.paradas_contraataque
+            mapa_paradas["contraataque"]["lanzamientos"] += p.lanzamientos_contraataque
 
     partidos_gk = len(porteros)
     partidos = max(partidos_campo, partidos_gk)
@@ -263,9 +373,16 @@ def jugador_detalle(
         asistencias=asistencias,
         minutos_jugados=minutos,
         partidos=partidos,
+        perdidas=perdidas,
+        pct_perdidas=pct_perdidas,
+        amarillas=amarillas,
+        exclusiones_2min=exclusiones_2min,
+        rojas=rojas,
+        azules=azules,
         es_portero=es_portero,
         paradas=paradas,
         lanzamientos_recibidos=recibidos,
+        goles_recibidos=goles_recibidos,
         efectividad_paradas=efectividad_paradas,
         goles_por_partido=[
             {"fecha": str(f.date()) if hasattr(f, "date") else str(f), "goles": int(g)}

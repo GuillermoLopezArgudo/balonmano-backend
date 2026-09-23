@@ -9,10 +9,23 @@ router = APIRouter(prefix="/convocatorias", tags=["convocatorias"])
 
 MAX_CONVOCADOS = 16
 MAX_TITULARES = 7
+ZONAS_VALIDAS = {
+    "portero",
+    "extremo_izq",
+    "lateral_izq",
+    "central",
+    "lateral_der",
+    "extremo_der",
+    "pivote",
+}
 
 
 def _partido_del_equipo(db: Session, id_partido: str, id_equipo) -> models.Partido | None:
     return partido_del_equipo(db, id_partido, id_equipo)
+
+
+def _norm_zona(z: str | None) -> str | None:
+    return z if z in ZONAS_VALIDAS else None
 
 
 def _items_out(db: Session, id_partido, id_equipo) -> list[schemas.ConvocatoriaItemOut]:
@@ -36,10 +49,15 @@ def _items_out(db: Session, id_partido, id_equipo) -> list[schemas.ConvocatoriaI
             if je.id_equipo == id_equipo:
                 dorsal = je.dorsal
                 break
+        zona_ataque = f.zona_ataque or f.zona_campo
+        zona_defensa = f.zona_defensa
         out.append(
             schemas.ConvocatoriaItemOut(
                 id_jugador=f.id_jugador,
                 rol=f.rol,
+                zona_campo=zona_ataque,
+                zona_ataque=zona_ataque,
+                zona_defensa=zona_defensa,
                 nombre=j.nombre if j else None,
                 apellido=j.apellido if j else None,
                 dorsal=dorsal,
@@ -83,18 +101,27 @@ def guardar(
             status_code=400,
             detail=f"Máximo {MAX_CONVOCADOS} convocados",
         )
-    titulares = [i for i in payload.items if i.rol == "titular"]
-    if len(titulares) > MAX_TITULARES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Máximo {MAX_TITULARES} titulares",
-        )
 
     ids = [i.id_jugador for i in payload.items]
     if len(ids) != len(set(ids)):
         raise HTTPException(status_code=400, detail="Jugador duplicado en la convocatoria")
 
+    zonas_ataque = []
+    zonas_defensa = []
     for item in payload.items:
+        za = _norm_zona(item.zona_ataque or item.zona_campo)
+        zd = _norm_zona(item.zona_defensa)
+        if item.zona_ataque and item.zona_ataque not in ZONAS_VALIDAS:
+            raise HTTPException(status_code=400, detail=f"Zona ataque inválida: {item.zona_ataque}")
+        if item.zona_campo and item.zona_campo not in ZONAS_VALIDAS and not item.zona_ataque:
+            raise HTTPException(status_code=400, detail=f"Zona inválida: {item.zona_campo}")
+        if item.zona_defensa and item.zona_defensa not in ZONAS_VALIDAS:
+            raise HTTPException(status_code=400, detail=f"Zona defensa inválida: {item.zona_defensa}")
+        if za:
+            zonas_ataque.append(za)
+        if zd:
+            zonas_defensa.append(zd)
+
         vinculo = (
             db.query(models.JugadorEquipo)
             .filter(
@@ -109,13 +136,39 @@ def guardar(
                 detail="Hay jugadores que no pertenecen a tu equipo",
             )
 
+    if len(zonas_ataque) != len(set(zonas_ataque)):
+        raise HTTPException(status_code=400, detail="Zona de ataque duplicada")
+    if len(zonas_defensa) != len(set(zonas_defensa)):
+        raise HTTPException(status_code=400, detail="Zona de defensa duplicada")
+    if len(zonas_ataque) > MAX_TITULARES - 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Máximo {MAX_TITULARES - 1} en alineación de ataque (sin portera)",
+        )
+    if "portero" in zonas_ataque:
+        raise HTTPException(
+            status_code=400,
+            detail="La alineación de ataque no admite portera",
+        )
+    if len(zonas_defensa) > MAX_TITULARES:
+        raise HTTPException(status_code=400, detail=f"Máximo {MAX_TITULARES} en alineación de defensa")
+
     db.query(models.Convocatoria).filter(models.Convocatoria.id_partido == id_partido).delete()
     for item in payload.items:
+        za = _norm_zona(item.zona_ataque or item.zona_campo)
+        zd = _norm_zona(item.zona_defensa)
+        # Titular si está en alguna alineación de campo
+        rol = item.rol
+        if za or zd:
+            rol = "titular"
         db.add(
             models.Convocatoria(
                 id_partido=partido.id_partido,
                 id_jugador=item.id_jugador,
-                rol=item.rol,
+                rol=rol,
+                zona_campo=za,
+                zona_ataque=za,
+                zona_defensa=zd,
             )
         )
     db.commit()

@@ -160,6 +160,7 @@ class PartidoCreate(BaseModel):
     jornada: int | None = Field(default=None, ge=1)
     pabellon: str | None = Field(default=None, max_length=200)
     competicion: str | None = Field(default=None, max_length=100)
+    img_portada: str | None = Field(default=None, max_length=255)
     goles_local: int = Field(default=0, ge=0)
     goles_visitante: int = Field(default=0, ge=0)
     estado: str = Field(default="programado", pattern="^(programado|aplazado|jugado|no_disputado)$")
@@ -172,6 +173,7 @@ class PartidoUpdate(BaseModel):
     fecha: datetime | None = None
     pabellon: str | None = Field(default=None, max_length=200)
     competicion: str | None = Field(default=None, max_length=100)
+    img_portada: str | None = Field(default=None, max_length=255)
     estado: str | None = Field(
         default=None, pattern="^(programado|aplazado|jugado|no_disputado)$"
     )
@@ -191,6 +193,7 @@ class PartidoOut(BaseModel):
     jornada: int | None = None
     pabellon: str | None = None
     competicion: str | None = None
+    img_portada: str | None = None
     goles_local: int
     goles_visitante: int
     estado: str = "programado"
@@ -212,6 +215,31 @@ class RivalOut(BaseModel):
     nombre: str
 
 
+class RivalJugadorCreate(BaseModel):
+    dorsal: int = Field(ge=0, le=99)
+    nombre: str | None = Field(default=None, max_length=120)
+
+
+class RivalJugadorOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id_rival_jugador: uuid.UUID
+    id_rival: uuid.UUID
+    dorsal: int
+    nombre: str | None = None
+    activo: bool = True
+
+
+class RivalGoleadoraOut(BaseModel):
+    id_rival_jugador: uuid.UUID | None = None
+    dorsal: int | None = None
+    nombre: str | None = None
+    goles: int
+    zona_top: str | None = None
+    zona_top_label: str | None = None
+    zonas: dict[str, int] = {}
+
+
 class EstadisticaJugadorCreate(BaseModel):
     id_partido: uuid.UUID
     id_jugador: uuid.UUID
@@ -227,6 +255,7 @@ class EstadisticaJugadorCreate(BaseModel):
     amarillas: int = Field(default=0, ge=0)
     exclusiones_2min: int = Field(default=0, ge=0)
     rojas: int = Field(default=0, ge=0)
+    azules: int = Field(default=0, ge=0)
 
 
 class EstadisticaJugadorOut(EstadisticaJugadorCreate):
@@ -293,12 +322,17 @@ class AccionCreate(BaseModel):
     minuto: int = Field(ge=0, le=80)
     segundo: int = Field(default=0, ge=0, le=59)
     zona: str | None = Field(default=None, max_length=50)
+    zona_porteria: str | None = Field(default=None, max_length=50)
+    es_contraataque: bool = False
+    id_rival_jugador: uuid.UUID | None = None
 
 
 class AccionOut(AccionCreate):
     model_config = ConfigDict(from_attributes=True)
 
     id_accion: uuid.UUID
+    rival_dorsal: int | None = None
+    rival_nombre: str | None = None
 
 
 class ResumenJugador(BaseModel):
@@ -309,8 +343,13 @@ class ResumenJugador(BaseModel):
     goles: int
     asistencias: int
     lanzamientos: int
-    exclusiones_2min: int
+    perdidas: int = 0
+    amarillas: int = 0
+    exclusiones_2min: int = 0
+    rojas: int = 0
+    azules: int = 0
     minutos_jugados: int
+    pct_perdidas: float = 0.0
 
 
 class LoginIn(BaseModel):
@@ -355,9 +394,16 @@ class JugadorDetalleOut(BaseModel):
     asistencias: int
     minutos_jugados: int
     partidos: int
+    perdidas: int = 0
+    pct_perdidas: float = 0.0
+    amarillas: int = 0
+    exclusiones_2min: int = 0
+    rojas: int = 0
+    azules: int = 0
     es_portero: bool = False
     paradas: int = 0
     lanzamientos_recibidos: int = 0
+    goles_recibidos: int = 0
     efectividad_paradas: float = 0.0
     goles_por_partido: list[dict]
     zonas: dict
@@ -365,14 +411,25 @@ class JugadorDetalleOut(BaseModel):
     ultimos_partidos: list[dict] = []
 
 
+ZONA_CAMPO_PATTERN = (
+    "^(portero|extremo_izq|lateral_izq|central|lateral_der|extremo_der|pivote)$"
+)
+
+
 class ConvocatoriaItemIn(BaseModel):
     id_jugador: uuid.UUID
     rol: str = Field(default="convocado", pattern="^(convocado|titular|banquillo)$")
+    zona_campo: str | None = Field(default=None, pattern=ZONA_CAMPO_PATTERN)
+    zona_ataque: str | None = Field(default=None, pattern=ZONA_CAMPO_PATTERN)
+    zona_defensa: str | None = Field(default=None, pattern=ZONA_CAMPO_PATTERN)
 
 
 class ConvocatoriaItemOut(BaseModel):
     id_jugador: uuid.UUID
     rol: str
+    zona_campo: str | None = None
+    zona_ataque: str | None = None
+    zona_defensa: str | None = None
     nombre: str | None = None
     apellido: str | None = None
     dorsal: int | None = None
@@ -388,6 +445,41 @@ class ConvocatoriaOut(BaseModel):
 class ConvocatoriaPut(BaseModel):
     items: list[ConvocatoriaItemIn]
     confirmada: bool = False
+
+
+class AlineacionItemIn(BaseModel):
+    id_jugador: uuid.UUID
+    zona_campo: str = Field(pattern=ZONA_CAMPO_PATTERN)
+
+
+class AlineacionItemOut(BaseModel):
+    id_jugador: uuid.UUID
+    zona_campo: str
+    nombre: str | None = None
+    apellido: str | None = None
+    dorsal: int | None = None
+    posiciones: list[str] = []
+
+
+class AlineacionCreate(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    tipo: str = Field(default="ataque", pattern="^(ataque|defensa)$")
+    items: list[AlineacionItemIn] = []
+
+
+class AlineacionUpdate(BaseModel):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    tipo: str | None = Field(default=None, pattern="^(ataque|defensa)$")
+    items: list[AlineacionItemIn] | None = None
+
+
+class AlineacionOut(BaseModel):
+    id_alineacion: uuid.UUID
+    nombre: str
+    tipo: str = "ataque"
+    creado_en: datetime
+    actualizado_en: datetime
+    items: list[AlineacionItemOut] = []
 
 
 class MiembroCreate(BaseModel):
@@ -415,3 +507,117 @@ class MiembroOut(BaseModel):
     estado: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ——— Jugadas (pizarra multipaso) ———
+
+
+class JugadaPosicionIn(BaseModel):
+    id_pieza: uuid.UUID
+    x: float = Field(ge=0, le=100)
+    y: float = Field(ge=0, le=100)
+
+
+class JugadaFlechaIn(BaseModel):
+    id_pieza: uuid.UUID
+    x1: float = Field(ge=0, le=100)
+    y1: float = Field(ge=0, le=100)
+    x2: float = Field(ge=0, le=100)
+    y2: float = Field(ge=0, le=100)
+    tipo: str = Field(default="movimiento", pattern="^(movimiento|pase|lanzamiento)$")
+
+
+class JugadaPiezaIn(BaseModel):
+    id_pieza: uuid.UUID | None = None
+    etiqueta: str = Field(min_length=1, max_length=40)
+    color: str | None = Field(default=None, max_length=20)
+    id_jugador: uuid.UUID | None = None
+    orden: int = Field(default=0, ge=0, le=30)
+
+
+class JugadaPasoIn(BaseModel):
+    id_paso: uuid.UUID | None = None
+    orden: int = Field(ge=0, le=200)
+    titulo: str | None = Field(default=None, max_length=80)
+    balon_x: float | None = Field(default=None, ge=0, le=100)
+    balon_y: float | None = Field(default=None, ge=0, le=100)
+    id_pieza_balon: uuid.UUID | None = None
+    posiciones: list[JugadaPosicionIn] = []
+    flechas: list[JugadaFlechaIn] = []
+
+
+class JugadaCreate(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    fase: str = Field(default="ataque", pattern="^(ataque|defensa)$")
+    descripcion: str | None = Field(default=None, max_length=4000)
+    piezas: list[JugadaPiezaIn] = []
+    pasos: list[JugadaPasoIn] = []
+
+
+class JugadaUpdate(BaseModel):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    fase: str | None = Field(default=None, pattern="^(ataque|defensa)$")
+    descripcion: str | None = Field(default=None, max_length=4000)
+    piezas: list[JugadaPiezaIn] | None = None
+    pasos: list[JugadaPasoIn] | None = None
+
+
+class JugadaPosicionOut(BaseModel):
+    id_pieza: uuid.UUID
+    x: float
+    y: float
+
+
+class JugadaFlechaOut(BaseModel):
+    id_flecha: uuid.UUID
+    id_pieza: uuid.UUID
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    tipo: str = "movimiento"
+
+
+class JugadaPiezaOut(BaseModel):
+    id_pieza: uuid.UUID
+    etiqueta: str
+    color: str | None = None
+    id_jugador: uuid.UUID | None = None
+    orden: int = 0
+
+
+class JugadaPasoOut(BaseModel):
+    id_paso: uuid.UUID
+    orden: int
+    titulo: str | None = None
+    balon_x: float | None = None
+    balon_y: float | None = None
+    id_pieza_balon: uuid.UUID | None = None
+    posiciones: list[JugadaPosicionOut] = []
+    flechas: list[JugadaFlechaOut] = []
+
+
+class JugadaListOut(BaseModel):
+    id_jugada: uuid.UUID
+    nombre: str
+    fase: str
+    descripcion: str | None = None
+    num_pasos: int = 0
+    num_piezas: int = 0
+    creado_en: datetime
+    actualizado_en: datetime
+
+
+class JugadaOut(BaseModel):
+    id_jugada: uuid.UUID
+    nombre: str
+    fase: str
+    descripcion: str | None = None
+    creado_en: datetime
+    actualizado_en: datetime
+    piezas: list[JugadaPiezaOut] = []
+    pasos: list[JugadaPasoOut] = []
+
+
+class JugadaCopiarIn(BaseModel):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)

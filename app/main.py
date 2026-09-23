@@ -11,6 +11,8 @@ from app import models  # noqa: F401 — registra modelos en metadata
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.routers.auth import router as auth_router
+from app.routers.alineaciones import router as alineaciones_router
+from app.routers.jugadas import router as jugadas_router
 from app.routers.catalogos import router as catalogos_router
 from app.routers.convocatorias import router as convocatorias_router
 from app.routers.dashboard import router as dashboard_router
@@ -51,8 +53,43 @@ def ensure_schema() -> None:
         "ALTER TABLE datos_equipo ADD COLUMN IF NOT EXISTS pabellon VARCHAR(200)",
         "ALTER TABLE jugador ADD COLUMN IF NOT EXISTS peso_kg INTEGER",
         "ALTER TABLE jugador ADD COLUMN IF NOT EXISTS img_foto VARCHAR(255)",
+        "ALTER TABLE accion ADD COLUMN IF NOT EXISTS zona_porteria VARCHAR(50)",
+        "ALTER TABLE accion ADD COLUMN IF NOT EXISTS id_rival_jugador UUID",
+        "ALTER TABLE convocatoria ADD COLUMN IF NOT EXISTS zona_campo VARCHAR(30)",
+        "ALTER TABLE convocatoria ADD COLUMN IF NOT EXISTS zona_ataque VARCHAR(30)",
+        "ALTER TABLE convocatoria ADD COLUMN IF NOT EXISTS zona_defensa VARCHAR(30)",
+        "ALTER TABLE estadistica_jugador ADD COLUMN IF NOT EXISTS azules INTEGER DEFAULT 0",
+        "ALTER TABLE accion ADD COLUMN IF NOT EXISTS es_contraataque BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE alineacion_plantilla ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'ataque'",
+        "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS balon_x DOUBLE PRECISION",
+        "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS balon_y DOUBLE PRECISION",
+        "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS id_pieza_balon UUID",
+        "ALTER TABLE jugada_flecha ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'movimiento'",
+        """
+        UPDATE jugada_flecha SET tipo = 'movimiento'
+        WHERE tipo IS NULL OR tipo = ''
+        """,
+        """
+        UPDATE convocatoria SET zona_ataque = zona_campo
+        WHERE zona_ataque IS NULL AND zona_campo IS NOT NULL
+        """,
+        """
+        UPDATE alineacion_plantilla SET tipo = 'ataque'
+        WHERE tipo IS NULL OR tipo = ''
+        """,
+        """
+        DO $$ BEGIN
+          ALTER TABLE accion
+            ADD CONSTRAINT fk_accion_rival_jugador
+            FOREIGN KEY (id_rival_jugador) REFERENCES rival_jugador(id_rival_jugador)
+            ON DELETE SET NULL;
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        WHEN undefined_table THEN NULL;
+        END $$;
+        """,
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS pabellon VARCHAR(200)",
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS competicion VARCHAR(100)",
+        "ALTER TABLE partido ADD COLUMN IF NOT EXISTS img_portada VARCHAR(255)",
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'programado'",
         "ALTER TABLE temporada ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'activa'",
         "ALTER TABLE temporada ADD COLUMN IF NOT EXISTS cerrada_en TIMESTAMP",
@@ -172,6 +209,14 @@ async def lifespan(_: FastAPI):
     db = SessionLocal()
     try:
         seed_catalogos(db)
+        from app.routers.estadisticas import rebuild_estadistica_portero
+
+        n = rebuild_estadistica_portero(db)
+        if n:
+            db.commit()
+            logger.info("Reconstruidas %s filas de estadistica_portero desde acciones", n)
+        else:
+            db.commit()
     finally:
         db.close()
     yield
@@ -197,6 +242,8 @@ app.include_router(catalogos_router, prefix="/api")
 app.include_router(jugadores_router, prefix="/api")
 app.include_router(partidos_router, prefix="/api")
 app.include_router(convocatorias_router, prefix="/api")
+app.include_router(alineaciones_router, prefix="/api")
+app.include_router(jugadas_router, prefix="/api")
 app.include_router(miembros_router, prefix="/api")
 app.include_router(estadisticas_router, prefix="/api")
 app.include_router(uploads_router, prefix="/api")
@@ -213,4 +260,4 @@ def health():
             conn.execute(text("SELECT 1"))
     except Exception:
         raise HTTPException(status_code=503, detail="database_unavailable") from None
-    return {"status": "ok", "database": "ok"}
+    return {"status": "ok", "database": "ok", "build": "lanz-fix-1"}
