@@ -4,10 +4,21 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo, get_equipo_area
+from app.auth import get_current_equipo, get_current_session, AuthSession
 from app.database import get_db
+from app.permisos import AREA_LABELS
 
 router = APIRouter(prefix="/jugadas", tags=["jugadas"])
+
+
+def _assert_write(session: AuthSession, ambito: str) -> None:
+    area = "fisico" if ambito == "fisico" else "jugadas"
+    if not session.can_write_area(area):
+        label = AREA_LABELS.get(area, area)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Tu cargo ({session.cargo}) no puede modificar {label}",
+        )
 
 
 def _load(db: Session, id_jugada, id_equipo) -> models.Jugada | None:
@@ -33,6 +44,7 @@ def _out(j: models.Jugada) -> schemas.JugadaOut:
         id_jugada=j.id_jugada,
         nombre=j.nombre,
         fase=j.fase,
+        ambito=getattr(j, "ambito", None) or "tactica",
         descripcion=j.descripcion,
         creado_en=j.creado_en,
         actualizado_en=j.actualizado_en,
@@ -85,6 +97,7 @@ def _list_out(j: models.Jugada) -> schemas.JugadaListOut:
         id_jugada=j.id_jugada,
         nombre=j.nombre,
         fase=j.fase,
+        ambito=getattr(j, "ambito", None) or "tactica",
         descripcion=j.descripcion,
         num_pasos=len(j.pasos or []),
         num_piezas=len(j.piezas or []),
@@ -95,7 +108,25 @@ def _list_out(j: models.Jugada) -> schemas.JugadaListOut:
 
 def _default_contenido(fase: str) -> tuple[list[schemas.JugadaPiezaIn], list[schemas.JugadaPasoIn]]:
     """Formación inicial razonable si crean vacía."""
-    if fase == "defensa":
+    if fase == "completo":
+        # Campo completo: A-* atacan derecha; D-* defienden (6-0).
+        layout = [
+            ("A-PO", "#ef4444", 4, 50),
+            ("A-CE", "#ef4444", 22, 50),
+            ("A-LI", "#ef4444", 28, 28),
+            ("A-LD", "#ef4444", 28, 72),
+            ("A-EI", "#ef4444", 40, 12),
+            ("A-ED", "#ef4444", 40, 88),
+            ("A-PI", "#ef4444", 46, 50),
+            ("D-PO", "#3b82f6", 96, 50),
+            ("D-ED", "#3b82f6", 82, 12),
+            ("D-LD", "#3b82f6", 78, 28),
+            ("D-CE", "#3b82f6", 74, 42),
+            ("D-PI", "#3b82f6", 74, 58),
+            ("D-LI", "#3b82f6", 78, 72),
+            ("D-EI", "#3b82f6", 82, 88),
+        ]
+    elif fase == "defensa":
         layout = [
             ("EI", "#93c5fd", 8, 78),
             ("LI", "#93c5fd", 20, 55),
@@ -220,15 +251,20 @@ def _aplicar_contenido(
 @router.get("/", response_model=list[schemas.JugadaListOut])
 def listar(
     fase: str | None = None,
+    ambito: str | None = None,
     db: Session = Depends(get_db),
     equipo: models.Equipo = Depends(get_current_equipo),
 ):
+    ambito_f = ambito if ambito in ("tactica", "fisico") else "tactica"
     q = (
         db.query(models.Jugada)
         .options(joinedload(models.Jugada.pasos), joinedload(models.Jugada.piezas))
-        .filter(models.Jugada.id_equipo == equipo.id_equipo)
+        .filter(
+            models.Jugada.id_equipo == equipo.id_equipo,
+            models.Jugada.ambito == ambito_f,
+        )
     )
-    if fase in ("ataque", "defensa"):
+    if fase in ("ataque", "defensa", "completo"):
         q = q.filter(models.Jugada.fase == fase)
     filas = q.order_by(models.Jugada.actualizado_en.desc()).all()
     return [_list_out(j) for j in filas]
@@ -250,17 +286,28 @@ def obtener(
 def crear(
     payload: schemas.JugadaCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
+    session: AuthSession = Depends(get_current_session),
 ):
+    ambito = payload.ambito if payload.ambito in ("tactica", "fisico") else "tactica"
+    _assert_write(session, ambito)
+    equipo = session.equipo
+
+    fase = payload.fase
+    if ambito == "fisico" and fase not in ("ataque", "defensa", "completo"):
+        fase = "completo"
+    if ambito == "fisico" and not payload.fase:
+        fase = "completo"
+
     piezas = payload.piezas
     pasos = payload.pasos
     if not piezas or not pasos:
-        piezas, pasos = _default_contenido(payload.fase)
+        piezas, pasos = _default_contenido(fase)
 
     jugada = models.Jugada(
         id_equipo=equipo.id_equipo,
         nombre=payload.nombre.strip(),
-        fase=payload.fase,
+        fase=fase,
+        ambito=ambito,
         descripcion=(payload.descripcion or "").strip() or None,
     )
     db.add(jugada)
@@ -276,16 +323,24 @@ def actualizar(
     id_jugada: str,
     payload: schemas.JugadaUpdate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
+    session: AuthSession = Depends(get_current_session),
 ):
+    equipo = session.equipo
     jugada = _load(db, id_jugada, equipo.id_equipo)
     if not jugada:
         raise HTTPException(status_code=404, detail="Jugada no encontrada")
+
+    ambito = getattr(jugada, "ambito", None) or "tactica"
+    if payload.ambito is not None:
+        ambito = payload.ambito
+    _assert_write(session, ambito)
 
     if payload.nombre is not None:
         jugada.nombre = payload.nombre.strip()
     if payload.fase is not None:
         jugada.fase = payload.fase
+    if payload.ambito is not None:
+        jugada.ambito = payload.ambito
     if payload.descripcion is not None:
         jugada.descripcion = payload.descripcion.strip() or None
 
@@ -307,11 +362,15 @@ def copiar(
     id_jugada: str,
     payload: schemas.JugadaCopiarIn | None = None,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
+    session: AuthSession = Depends(get_current_session),
 ):
+    equipo = session.equipo
     origen = _load(db, id_jugada, equipo.id_equipo)
     if not origen:
         raise HTTPException(status_code=404, detail="Jugada no encontrada")
+
+    ambito = getattr(origen, "ambito", None) or "tactica"
+    _assert_write(session, ambito)
 
     nombre = (payload.nombre if payload and payload.nombre else None) or f"{origen.nombre} (copia)"
     full = _out(origen)
@@ -356,6 +415,7 @@ def copiar(
         id_equipo=equipo.id_equipo,
         nombre=nombre[:120],
         fase=origen.fase,
+        ambito=ambito,
         descripcion=origen.descripcion,
     )
     db.add(nueva)
@@ -370,8 +430,9 @@ def copiar(
 def eliminar(
     id_jugada: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
+    session: AuthSession = Depends(get_current_session),
 ):
+    equipo = session.equipo
     jugada = (
         db.query(models.Jugada)
         .filter(
@@ -382,6 +443,8 @@ def eliminar(
     )
     if not jugada:
         raise HTTPException(status_code=404, detail="Jugada no encontrada")
+    ambito = getattr(jugada, "ambito", None) or "tactica"
+    _assert_write(session, ambito)
     db.delete(jugada)
     db.commit()
     return None

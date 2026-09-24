@@ -588,7 +588,8 @@ class JugadaPasoIn(BaseModel):
 
 class JugadaCreate(BaseModel):
     nombre: str = Field(min_length=1, max_length=120)
-    fase: str = Field(default="ataque", pattern="^(ataque|defensa)$")
+    fase: str = Field(default="ataque", pattern="^(ataque|defensa|completo)$")
+    ambito: str = Field(default="tactica", pattern="^(tactica|fisico)$")
     descripcion: str | None = Field(default=None, max_length=4000)
     piezas: list[JugadaPiezaIn] = []
     pasos: list[JugadaPasoIn] = []
@@ -596,7 +597,8 @@ class JugadaCreate(BaseModel):
 
 class JugadaUpdate(BaseModel):
     nombre: str | None = Field(default=None, min_length=1, max_length=120)
-    fase: str | None = Field(default=None, pattern="^(ataque|defensa)$")
+    fase: str | None = Field(default=None, pattern="^(ataque|defensa|completo)$")
+    ambito: str | None = Field(default=None, pattern="^(tactica|fisico)$")
     descripcion: str | None = Field(default=None, max_length=4000)
     piezas: list[JugadaPiezaIn] | None = None
     pasos: list[JugadaPasoIn] | None = None
@@ -641,6 +643,7 @@ class JugadaListOut(BaseModel):
     id_jugada: uuid.UUID
     nombre: str
     fase: str
+    ambito: str = "tactica"
     descripcion: str | None = None
     num_pasos: int = 0
     num_piezas: int = 0
@@ -652,6 +655,7 @@ class JugadaOut(BaseModel):
     id_jugada: uuid.UUID
     nombre: str
     fase: str
+    ambito: str = "tactica"
     descripcion: str | None = None
     creado_en: datetime
     actualizado_en: datetime
@@ -733,3 +737,41 @@ class CuotaBulkIn(BaseModel):
         pattern="^(limpiar|federacion_pagada|federacion_pendiente)$",
         description="limpiar = borrar todos los pagos de la selección",
     )
+
+
+# ——— Preparación física ———
+
+_PREP_TIPO = (
+    "^(fuerza|resistencia|potencia|movilidad|prevencion|prepartido|recuperacion|otro)$"
+)
+_PREP_INTENSIDAD = "^(baja|media|alta)$"
+
+
+class PreparacionFisicaCreate(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    tipo: str = Field(default="fuerza", pattern=_PREP_TIPO)
+    objetivo: str | None = Field(default=None, max_length=300)
+    contenido: str | None = Field(default=None, max_length=20000)
+    duracion_min: int | None = Field(default=None, ge=1, le=600)
+    intensidad: str | None = Field(default=None, pattern=_PREP_INTENSIDAD)
+
+
+class PreparacionFisicaUpdate(BaseModel):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    tipo: str | None = Field(default=None, pattern=_PREP_TIPO)
+    objetivo: str | None = Field(default=None, max_length=300)
+    contenido: str | None = Field(default=None, max_length=20000)
+    duracion_min: int | None = Field(default=None, ge=1, le=600)
+    intensidad: str | None = Field(default=None, pattern=_PREP_INTENSIDAD)
+
+
+class PreparacionFisicaOut(BaseModel):
+    id_preparacion: uuid.UUID
+    nombre: str
+    tipo: str
+    objetivo: str | None = None
+    contenido: str | None = None
+    duracion_min: int | None = None
+    intensidad: str | None = None
+    creado_en: datetime
+    actualizado_en: datetime

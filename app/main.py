@@ -13,6 +13,7 @@ from app.database import Base, SessionLocal, engine
 from app.routers.auth import router as auth_router
 from app.routers.alineaciones import router as alineaciones_router
 from app.routers.jugadas import router as jugadas_router
+from app.routers.preparaciones import router as preparaciones_router
 from app.routers.catalogos import router as catalogos_router
 from app.routers.convocatorias import router as convocatorias_router
 from app.routers.cuotas import router as cuotas_router
@@ -66,6 +67,29 @@ def ensure_schema() -> None:
         "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS balon_y DOUBLE PRECISION",
         "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS id_pieza_balon UUID",
         "ALTER TABLE jugada_flecha ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'movimiento'",
+        "ALTER TABLE jugada ADD COLUMN IF NOT EXISTS ambito VARCHAR(20) DEFAULT 'tactica'",
+        """
+        UPDATE jugada SET ambito = 'tactica'
+        WHERE ambito IS NULL OR ambito = ''
+        """,
+        """
+        DO $$ BEGIN
+          ALTER TABLE jugada DROP CONSTRAINT IF EXISTS ck_jugada_fase;
+          ALTER TABLE jugada
+            ADD CONSTRAINT ck_jugada_fase
+            CHECK (fase IN ('ataque', 'defensa', 'completo'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+        """,
+        """
+        DO $$ BEGIN
+          ALTER TABLE jugada DROP CONSTRAINT IF EXISTS ck_jugada_ambito;
+          ALTER TABLE jugada
+            ADD CONSTRAINT ck_jugada_ambito
+            CHECK (ambito IN ('tactica', 'fisico'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+        """,
         """
         UPDATE jugada_flecha SET tipo = 'movimiento'
         WHERE tipo IS NULL OR tipo = ''
@@ -279,6 +303,7 @@ app.include_router(convocatorias_router, prefix="/api")
 app.include_router(cuotas_router, prefix="/api")
 app.include_router(alineaciones_router, prefix="/api")
 app.include_router(jugadas_router, prefix="/api")
+app.include_router(preparaciones_router, prefix="/api")
 app.include_router(miembros_router, prefix="/api")
 app.include_router(estadisticas_router, prefix="/api")
 app.include_router(uploads_router, prefix="/api")

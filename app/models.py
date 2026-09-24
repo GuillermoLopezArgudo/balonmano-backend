@@ -56,6 +56,9 @@ class Equipo(Base):
     jugadas: Mapped[list["Jugada"]] = relationship(
         back_populates="equipo", cascade="all, delete-orphan"
     )
+    preparaciones_fisicas: Mapped[list["PreparacionFisica"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
+    )
     cuota_configs: Mapped[list["CuotaConfig"]] = relationship(
         back_populates="equipo", cascade="all, delete-orphan"
     )
@@ -542,7 +545,14 @@ class MiembroClub(Base):
 class Jugada(Base):
     __tablename__ = "jugada"
     __table_args__ = (
-        CheckConstraint("fase IN ('ataque', 'defensa')", name="ck_jugada_fase"),
+        CheckConstraint(
+            "fase IN ('ataque', 'defensa', 'completo')",
+            name="ck_jugada_fase",
+        ),
+        CheckConstraint(
+            "ambito IN ('tactica', 'fisico')",
+            name="ck_jugada_ambito",
+        ),
     )
 
     id_jugada: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -551,6 +561,7 @@ class Jugada(Base):
     )
     nombre: Mapped[str] = mapped_column(String(120), nullable=False)
     fase: Mapped[str] = mapped_column(String(20), nullable=False, default="ataque")
+    ambito: Mapped[str] = mapped_column(String(20), nullable=False, default="tactica")
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     actualizado_en: Mapped[datetime] = mapped_column(
@@ -646,6 +657,56 @@ class JugadaFlecha(Base):
     tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="movimiento")
 
     paso: Mapped["JugadaPaso"] = relationship(back_populates="flechas")
+
+
+PREPARACION_TIPOS = (
+    "fuerza",
+    "resistencia",
+    "potencia",
+    "movilidad",
+    "prevencion",
+    "prepartido",
+    "recuperacion",
+    "otro",
+)
+
+PREPARACION_INTENSIDADES = ("baja", "media", "alta")
+
+
+class PreparacionFisica(Base):
+    """Sesión / plan de preparación física del equipo (sin PDF por ahora)."""
+
+    __tablename__ = "preparacion_fisica"
+    __table_args__ = (
+        CheckConstraint(
+            "tipo IN ('fuerza', 'resistencia', 'potencia', 'movilidad', 'prevencion', "
+            "'prepartido', 'recuperacion', 'otro')",
+            name="ck_preparacion_fisica_tipo",
+        ),
+        CheckConstraint(
+            "intensidad IS NULL OR intensidad IN ('baja', 'media', 'alta')",
+            name="ck_preparacion_fisica_intensidad",
+        ),
+    )
+
+    id_preparacion: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4
+    )
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    nombre: Mapped[str] = mapped_column(String(120), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(30), nullable=False, default="fuerza")
+    objetivo: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    contenido: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duracion_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    intensidad: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="preparaciones_fisicas")
 
 
 # Meses de cuota: septiembre (9) → junio (6). Un pago por mes y temporada.
