@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo
+from app.auth import get_current_equipo, get_equipo_area
 from app.database import get_db
 
 router = APIRouter(prefix="/jugadores", tags=["jugadores"])
@@ -85,7 +85,7 @@ def listar(
 def crear(
     payload: schemas.JugadorCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("plantilla")),
 ):
     if payload.id_posicion and not db.get(models.Posicion, payload.id_posicion):
         raise HTTPException(status_code=404, detail="Posición no encontrada")
@@ -142,7 +142,7 @@ def actualizar(
     id_jugador: str,
     payload: schemas.JugadorUpdate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("plantilla")),
 ):
     jugador = _load_jugador(db, id_jugador)
     if not jugador:
@@ -191,7 +191,7 @@ def actualizar(
 def borrar(
     id_jugador: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("plantilla")),
 ):
     jugador = db.get(models.Jugador, id_jugador)
     if not jugador:

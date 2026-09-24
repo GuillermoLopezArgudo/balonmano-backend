@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo
+from app.auth import get_current_equipo, get_equipo_area
 from app.database import get_db
 
 router = APIRouter(prefix="/jugadas", tags=["jugadas"])
@@ -250,7 +250,7 @@ def obtener(
 def crear(
     payload: schemas.JugadaCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
 ):
     piezas = payload.piezas
     pasos = payload.pasos
@@ -276,7 +276,7 @@ def actualizar(
     id_jugada: str,
     payload: schemas.JugadaUpdate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
 ):
     jugada = _load(db, id_jugada, equipo.id_equipo)
     if not jugada:
@@ -307,7 +307,7 @@ def copiar(
     id_jugada: str,
     payload: schemas.JugadaCopiarIn | None = None,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
 ):
     origen = _load(db, id_jugada, equipo.id_equipo)
     if not origen:
@@ -370,7 +370,7 @@ def copiar(
 def eliminar(
     id_jugada: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("jugadas")),
 ):
     jugada = (
         db.query(models.Jugada)

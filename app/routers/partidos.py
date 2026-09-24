@@ -3,7 +3,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo, partido_del_equipo
+from app.auth import get_current_equipo, partido_del_equipo, get_equipo_area
 from app.database import get_db
 
 router = APIRouter(prefix="/partidos", tags=["partidos"])
@@ -120,7 +120,7 @@ def listar(
 def crear(
     payload: schemas.PartidoCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("partidos")),
 ):
     rival = (
         db.query(models.Rival)
@@ -179,7 +179,7 @@ def actualizar(
     id_partido: str,
     payload: schemas.PartidoUpdate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("partidos")),
 ):
     if not partido_del_equipo(db, id_partido, equipo.id_equipo):
         raise HTTPException(status_code=404, detail="Partido no encontrado")
@@ -197,7 +197,7 @@ def actualizar(
 def borrar(
     id_partido: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("partidos")),
 ):
     partido = partido_del_equipo(db, id_partido, equipo.id_equipo)
     if not partido:

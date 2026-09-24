@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app import models
-from app.auth import get_current_equipo
+from app.auth import get_current_equipo, get_equipo_write
 from app.config import settings
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
@@ -34,7 +34,7 @@ def uploads_root() -> Path:
 async def upload_imagen(
     tipo: str = "jugador",
     file: UploadFile = File(...),
-    _: models.Equipo = Depends(get_current_equipo),
+    _: models.Equipo = Depends(get_equipo_write),
 ):
     if tipo not in TIPOS:
         raise HTTPException(status_code=400, detail="tipo debe ser jugador, escudo o partido")

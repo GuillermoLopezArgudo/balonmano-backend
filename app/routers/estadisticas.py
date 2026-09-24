@@ -3,7 +3,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo, partido_del_equipo
+from app.auth import get_current_equipo, partido_del_equipo, get_equipo_area
 from app.database import get_db
 
 router = APIRouter(prefix="/estadisticas", tags=["estadisticas"])
@@ -208,7 +208,7 @@ def listar_jugador(
 def crear_jugador(
     payload: schemas.EstadisticaJugadorCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
 ):
     _assert_partido(db, payload.id_partido, equipo.id_equipo)
     _assert_jugador_club(db, payload.id_jugador, equipo.id_equipo)
@@ -239,7 +239,7 @@ def crear_jugador(
 def upsert_jugador(
     payload: schemas.EstadisticaJugadorCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
 ):
     return crear_jugador(payload, db, equipo)
 
@@ -268,7 +268,7 @@ def listar_lanzamiento(
 def crear_lanzamiento(
     payload: schemas.EstadisticaLanzamientoCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
 ):
     _assert_partido(db, payload.id_partido, equipo.id_equipo)
     _assert_jugador_club(db, payload.id_jugador, equipo.id_equipo)
@@ -303,7 +303,7 @@ def listar_portero(
 def crear_portero(
     payload: schemas.EstadisticaPorteroCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
 ):
     _assert_partido(db, payload.id_partido, equipo.id_equipo)
     _assert_jugador_club(db, payload.id_jugador, equipo.id_equipo)
@@ -334,7 +334,7 @@ def crear_portero(
 def upsert_portero(
     payload: schemas.EstadisticaPorteroCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
 ):
     return crear_portero(payload, db, equipo)
 
@@ -378,7 +378,7 @@ def listar_acciones(
 def crear_accion(
     payload: schemas.AccionCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
 ):
     try:
         fila = _crear_accion_impl(payload, db, equipo)
@@ -579,7 +579,7 @@ def resumen_jugadores(
 def borrar_jugador(
     id_estadistica: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
 ):
     fila = db.get(models.EstadisticaJugador, id_estadistica)
     if not fila:

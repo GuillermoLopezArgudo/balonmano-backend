@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo
+from app.auth import get_current_equipo, get_equipo_area
 from app.database import get_db
 
 router = APIRouter(prefix="/alineaciones", tags=["alineaciones"])
@@ -138,7 +138,7 @@ def listar(
 def crear(
     payload: schemas.AlineacionCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("convocatoria")),
 ):
     _validar_items(db, payload.items, equipo.id_equipo, payload.tipo)
     plantilla = models.AlineacionPlantilla(
@@ -166,7 +166,7 @@ def actualizar(
     id_alineacion: str,
     payload: schemas.AlineacionUpdate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("convocatoria")),
 ):
     plantilla = _load_plantilla(db, id_alineacion, equipo.id_equipo)
     if not plantilla:
@@ -200,7 +200,7 @@ def actualizar(
 def eliminar(
     id_alineacion: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("convocatoria")),
 ):
     plantilla = (
         db.query(models.AlineacionPlantilla)

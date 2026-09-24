@@ -15,6 +15,7 @@ from app.routers.alineaciones import router as alineaciones_router
 from app.routers.jugadas import router as jugadas_router
 from app.routers.catalogos import router as catalogos_router
 from app.routers.convocatorias import router as convocatorias_router
+from app.routers.cuotas import router as cuotas_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.equipos import router as equipos_router
 from app.routers.estadisticas import router as estadisticas_router
@@ -95,6 +96,39 @@ def ensure_schema() -> None:
         "ALTER TABLE temporada ADD COLUMN IF NOT EXISTS cerrada_en TIMESTAMP",
         "ALTER TABLE datos_equipo ADD COLUMN IF NOT EXISTS entrenador_nombre VARCHAR(150)",
         "ALTER TABLE temporada ADD COLUMN IF NOT EXISTS id_equipo UUID REFERENCES equipo(id_equipo) ON DELETE CASCADE",
+        "ALTER TABLE miembro_club ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)",
+        "ALTER TABLE miembro_club ADD COLUMN IF NOT EXISTS invite_token VARCHAR(64)",
+        "ALTER TABLE miembro_club ADD COLUMN IF NOT EXISTS invite_expires TIMESTAMP",
+        # Orden crítico: primero quitar el CHECK viejo (admin|editor|lector),
+        # luego migrar valores, luego crear el CHECK nuevo (admin|miembro).
+        "ALTER TABLE miembro_club DROP CONSTRAINT IF EXISTS ck_miembro_permiso",
+        """
+        UPDATE miembro_club SET permiso = 'miembro'
+        WHERE permiso IS NULL OR permiso = ''
+           OR permiso NOT IN ('administrador', 'miembro')
+        """,
+        """
+        DO $$ BEGIN
+          ALTER TABLE miembro_club
+            ADD CONSTRAINT ck_miembro_permiso
+            CHECK (permiso IN ('administrador', 'miembro'));
+        EXCEPTION
+          WHEN duplicate_object THEN NULL;
+        END $$;
+        """,
+        """
+        UPDATE miembro_club SET cargo = 'Staff'
+        WHERE cargo IN ('Analista', 'Director / Gestor', 'Administrador')
+           OR cargo IS NULL OR cargo = ''
+        """,
+        """
+        DO $$ BEGIN
+          CREATE UNIQUE INDEX IF NOT EXISTS uq_miembro_invite_token
+            ON miembro_club (invite_token)
+            WHERE invite_token IS NOT NULL;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END $$;
+        """,
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS id_equipo UUID REFERENCES equipo(id_equipo) ON DELETE CASCADE",
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS id_rival UUID",
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS es_local BOOLEAN DEFAULT TRUE",
@@ -242,6 +276,7 @@ app.include_router(catalogos_router, prefix="/api")
 app.include_router(jugadores_router, prefix="/api")
 app.include_router(partidos_router, prefix="/api")
 app.include_router(convocatorias_router, prefix="/api")
+app.include_router(cuotas_router, prefix="/api")
 app.include_router(alineaciones_router, prefix="/api")
 app.include_router(jugadas_router, prefix="/api")
 app.include_router(miembros_router, prefix="/api")

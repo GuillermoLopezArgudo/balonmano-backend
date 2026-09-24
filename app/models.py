@@ -56,6 +56,15 @@ class Equipo(Base):
     jugadas: Mapped[list["Jugada"]] = relationship(
         back_populates="equipo", cascade="all, delete-orphan"
     )
+    cuota_configs: Mapped[list["CuotaConfig"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
+    )
+    cuota_mensuales: Mapped[list["CuotaMensual"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
+    )
+    federacion_pagos: Mapped[list["FederacionPago"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
+    )
 
 
 class DatosEquipo(Base):
@@ -101,7 +110,9 @@ class Temporada(Base):
     equipos: Mapped[list["EquipoTemporada"]] = relationship(
         back_populates="temporada", cascade="all, delete-orphan"
     )
-    partidos: Mapped[list["Partido"]] = relationship(back_populates="temporada")
+    partidos: Mapped[list["Partido"]] = relationship(
+        back_populates="temporada", passive_deletes=True
+    )
 
 
 class Rival(Base):
@@ -501,7 +512,7 @@ class MiembroClub(Base):
     __tablename__ = "miembro_club"
     __table_args__ = (
         CheckConstraint(
-            "permiso IN ('administrador', 'editor', 'lector')",
+            "permiso IN ('administrador', 'miembro')",
             name="ck_miembro_permiso",
         ),
         CheckConstraint(
@@ -518,8 +529,11 @@ class MiembroClub(Base):
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
     correo: Mapped[str] = mapped_column(String(255), nullable=False)
     cargo: Mapped[str] = mapped_column(String(100), nullable=False, default="Staff")
-    permiso: Mapped[str] = mapped_column(String(20), nullable=False, default="editor")
+    permiso: Mapped[str] = mapped_column(String(20), nullable=False, default="miembro")
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activo")
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    invite_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    invite_expires: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     equipo: Mapped["Equipo"] = relationship(back_populates="miembros")
@@ -632,3 +646,89 @@ class JugadaFlecha(Base):
     tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="movimiento")
 
     paso: Mapped["JugadaPaso"] = relationship(back_populates="flechas")
+
+
+# Meses de cuota: septiembre (9) → junio (6). Un pago por mes y temporada.
+CUOTA_MESES = (9, 10, 11, 12, 1, 2, 3, 4, 5, 6)
+
+
+class CuotaConfig(Base):
+    """Importe de cuota mensual y federación por equipo/temporada."""
+
+    __tablename__ = "cuota_config"
+    __table_args__ = (
+        UniqueConstraint("id_equipo", "id_temporada", name="uq_cuota_config_equipo_temp"),
+    )
+
+    id_config: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_temporada: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("temporada.id_temporada", ondelete="CASCADE"), nullable=False, index=True
+    )
+    importe_mensual: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    importe_federacion: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="cuota_configs")
+    temporada: Mapped["Temporada"] = relationship()
+
+
+class CuotaMensual(Base):
+    """Pago mensual de cuota (sep–jun) por jugadora."""
+
+    __tablename__ = "cuota_mensual"
+    __table_args__ = (
+        UniqueConstraint(
+            "id_equipo", "id_temporada", "id_jugador", "mes",
+            name="uq_cuota_mensual_jugador_mes",
+        ),
+        CheckConstraint("mes IN (1,2,3,4,5,6,9,10,11,12)", name="ck_cuota_mensual_mes"),
+    )
+
+    id_pago: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_temporada: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("temporada.id_temporada", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_jugador: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugador.id_jugador", ondelete="CASCADE"), nullable=False, index=True
+    )
+    mes: Mapped[int] = mapped_column(Integer, nullable=False)
+    pagado: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pagado_en: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="cuota_mensuales")
+    jugador: Mapped["Jugador"] = relationship()
+    temporada: Mapped["Temporada"] = relationship()
+
+
+class FederacionPago(Base):
+    """Licencia federativa: pago único por temporada (sin prorrateo)."""
+
+    __tablename__ = "federacion_pago"
+    __table_args__ = (
+        UniqueConstraint(
+            "id_equipo", "id_temporada", "id_jugador",
+            name="uq_federacion_jugador_temp",
+        ),
+    )
+
+    id_pago: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_temporada: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("temporada.id_temporada", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_jugador: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugador.id_jugador", ondelete="CASCADE"), nullable=False, index=True
+    )
+    pagado: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pagado_en: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="federacion_pagos")
+    jugador: Mapped["Jugador"] = relationship()
+    temporada: Mapped["Temporada"] = relationship()

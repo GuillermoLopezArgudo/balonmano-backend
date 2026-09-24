@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo, partido_del_equipo
+from app.auth import get_current_equipo, partido_del_equipo, get_equipo_area
 from app.database import get_db
+from app.routers.cuotas import federacion_pagada
 
 router = APIRouter(prefix="/convocatorias", tags=["convocatorias"])
 
@@ -90,7 +91,7 @@ def guardar(
     id_partido: str,
     payload: schemas.ConvocatoriaPut,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("convocatoria")),
 ):
     partido = _partido_del_equipo(db, id_partido, equipo.id_equipo)
     if not partido:
@@ -101,6 +102,9 @@ def guardar(
             status_code=400,
             detail=f"Máximo {MAX_CONVOCADOS} convocados",
         )
+
+    id_temporada = partido.id_temporada
+    sin_fed = []
 
     ids = [i.id_jugador for i in payload.items]
     if len(ids) != len(set(ids)):
@@ -135,6 +139,24 @@ def guardar(
                 status_code=400,
                 detail="Hay jugadores que no pertenecen a tu equipo",
             )
+
+        if id_temporada and not federacion_pagada(
+            db, equipo.id_equipo, id_temporada, item.id_jugador
+        ):
+            j = db.get(models.Jugador, item.id_jugador)
+            nombre = f"{j.nombre} {j.apellido}".strip() if j else str(item.id_jugador)
+            sin_fed.append(nombre)
+
+    if sin_fed:
+        lista = ", ".join(sin_fed[:5])
+        extra = f" (+{len(sin_fed) - 5} más)" if len(sin_fed) > 5 else ""
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No se puede convocar sin federación pagada: {lista}{extra}. "
+                "Márcala en Club → Cuotas."
+            ),
+        )
 
     if len(zonas_ataque) != len(set(zonas_ataque)):
         raise HTTPException(status_code=400, detail="Zona de ataque duplicada")

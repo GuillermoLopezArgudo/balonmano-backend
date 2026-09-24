@@ -357,9 +357,49 @@ class LoginIn(BaseModel):
     password: str
 
 
+class MiembroSesionOut(BaseModel):
+    id_miembro: uuid.UUID
+    nombre: str
+    correo: str
+    cargo: str
+    permiso: str
+
+
 class AuthOut(BaseModel):
     token: str
     equipo: EquipoOut
+    miembro: MiembroSesionOut | None = None
+
+
+class SesionOut(BaseModel):
+    equipo: EquipoOut
+    miembro: MiembroSesionOut | None = None
+    permiso: str = "administrador"
+
+
+class PasswordChangeIn(BaseModel):
+    password_actual: str = Field(min_length=1, max_length=128)
+    password_nueva: str = Field(min_length=8, max_length=128)
+
+
+class MiembroPerfilUpdate(BaseModel):
+    nombre: str | None = Field(default=None, min_length=2, max_length=150)
+
+
+class AceptarInvitacionIn(BaseModel):
+    token: str = Field(min_length=10, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+    nombre: str | None = Field(default=None, min_length=2, max_length=150)
+
+
+class InvitacionInfoOut(BaseModel):
+    nombre: str
+    correo: str
+    cargo: str
+    permiso: str
+    club: str
+    expira: datetime | None = None
+    ya_aceptada: bool = False
 
 
 class RegistroIn(BaseModel):
@@ -486,14 +526,12 @@ class MiembroCreate(BaseModel):
     nombre: str = Field(min_length=2, max_length=150)
     correo: str = Field(min_length=5, max_length=255)
     cargo: str = Field(default="Staff", max_length=100)
-    permiso: str = Field(default="editor", pattern="^(administrador|editor|lector)$")
     estado: str = Field(default="pendiente", pattern="^(activo|pendiente|baja)$")
 
 
 class MiembroUpdate(BaseModel):
     nombre: str | None = Field(default=None, min_length=2, max_length=150)
     cargo: str | None = Field(default=None, max_length=100)
-    permiso: str | None = Field(default=None, pattern="^(administrador|editor|lector)$")
     estado: str | None = Field(default=None, pattern="^(activo|pendiente|baja)$")
 
 
@@ -505,6 +543,8 @@ class MiembroOut(BaseModel):
     cargo: str
     permiso: str
     estado: str
+    tiene_acceso: bool = False
+    invite_url: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -621,3 +661,75 @@ class JugadaOut(BaseModel):
 
 class JugadaCopiarIn(BaseModel):
     nombre: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+# --- Cuotas / Federación ---
+
+CUOTA_MESES_ORDEN = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6]
+
+
+class CuotaConfigIn(BaseModel):
+    importe_mensual: float = Field(ge=0, le=99999)
+    importe_federacion: float = Field(ge=0, le=99999)
+
+
+class CuotaConfigOut(BaseModel):
+    id_temporada: uuid.UUID
+    importe_mensual: float
+    importe_federacion: float
+
+
+class CuotaMesEstado(BaseModel):
+    mes: int
+    pagado: bool
+
+
+class CuotaJugadoraOut(BaseModel):
+    id_jugador: uuid.UUID
+    nombre: str
+    apellido: str
+    dorsal: int | None = None
+    federacion_pagada: bool = False
+    meses: list[CuotaMesEstado] = []
+
+
+class CuotaResumenOut(BaseModel):
+    total_jugadoras: int = 0
+    federacion_pagadas: int = 0
+    federacion_pendientes: int = 0
+    cuotas_pagadas: int = 0
+    cuotas_pendientes: int = 0
+    esperado_mensual: float = 0
+    cobrado_mensual: float = 0
+    esperado_federacion: float = 0
+    cobrado_federacion: float = 0
+
+
+class CuotasTemporadaOut(BaseModel):
+    id_temporada: uuid.UUID
+    temporada_nombre: str
+    temporada_estado: str
+    meses: list[int] = Field(default_factory=lambda: list(CUOTA_MESES_ORDEN))
+    config: CuotaConfigOut
+    jugadoras: list[CuotaJugadoraOut] = []
+    resumen: CuotaResumenOut = Field(default_factory=CuotaResumenOut)
+    solo_lectura: bool = False
+
+
+class CuotaMensualPatch(BaseModel):
+    id_jugador: uuid.UUID
+    mes: int = Field(ge=1, le=12)
+    pagado: bool
+
+
+class FederacionPatch(BaseModel):
+    id_jugador: uuid.UUID
+    pagado: bool
+
+
+class CuotaBulkIn(BaseModel):
+    id_jugadores: list[uuid.UUID] = Field(min_length=1)
+    accion: str = Field(
+        pattern="^(limpiar|federacion_pagada|federacion_pendiente)$",
+        description="limpiar = borrar todos los pagos de la selección",
+    )

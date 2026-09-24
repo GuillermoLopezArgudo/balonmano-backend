@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.auth import get_current_equipo
+from app.auth import get_current_equipo, get_equipo_admin
 from app.database import get_db
 
 router = APIRouter(prefix="/temporadas", tags=["temporadas"])
@@ -104,7 +104,7 @@ def activa(
 def crear(
     payload: schemas.TemporadaCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_admin),
 ):
     if payload.fecha_fin < payload.fecha_inicio:
         raise HTTPException(status_code=400, detail="fecha_fin debe ser >= fecha_inicio")
@@ -135,12 +135,25 @@ def crear(
 def abrir(
     payload: schemas.TemporadaAbrir,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_admin),
 ):
     if payload.fecha_fin < payload.fecha_inicio:
         raise HTTPException(status_code=400, detail="fecha_fin debe ser >= fecha_inicio")
     if payload.cerrar_anterior:
         _cerrar_activas_club(db, equipo.id_equipo)
+    misma = (
+        db.query(models.Temporada)
+        .filter(
+            models.Temporada.id_equipo == equipo.id_equipo,
+            models.Temporada.nombre == payload.nombre.strip(),
+        )
+        .first()
+    )
+    if misma:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ya existe una temporada «{payload.nombre}». Reactívala o elige otro nombre.",
+        )
     temporada = models.Temporada(
         id_equipo=equipo.id_equipo,
         nombre=payload.nombre,
@@ -166,7 +179,7 @@ def abrir(
 def cerrar(
     id_temporada: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_admin),
 ):
     t = _get_owned(db, id_temporada, equipo.id_equipo)
     if not t:
@@ -184,7 +197,7 @@ def cerrar(
 def activar(
     id_temporada: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_admin),
 ):
     t = _get_owned(db, id_temporada, equipo.id_equipo)
     if not t:
@@ -203,7 +216,7 @@ def activar(
 def archivar(
     id_temporada: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_admin),
 ):
     t = _get_owned(db, id_temporada, equipo.id_equipo)
     if not t:
@@ -228,14 +241,23 @@ def archivar(
 def borrar(
     id_temporada: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_admin),
 ):
     temporada = _get_owned(db, id_temporada, equipo.id_equipo)
     if not temporada:
         raise HTTPException(status_code=404, detail="Temporada no encontrada")
     if temporada.estado == "activa":
         raise HTTPException(status_code=400, detail="No se puede borrar la temporada activa")
-    if _pendientes(db, temporada.id_temporada, equipo.id_equipo):
-        raise HTTPException(status_code=400, detail="Hay partidos pendientes en esta temporada")
+
+    # Borrar partidos primero: SQLAlchemy intenta poner id_temporada=NULL y falla (NOT NULL)
+    partidos = (
+        db.query(models.Partido)
+        .filter(models.Partido.id_temporada == temporada.id_temporada)
+        .all()
+    )
+    for p in partidos:
+        db.delete(p)
+    db.flush()
+
     db.delete(temporada)
     db.commit()

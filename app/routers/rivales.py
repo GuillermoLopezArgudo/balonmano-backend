@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo
+from app.auth import get_current_equipo, get_equipo_area
 from app.database import get_db
 
 router = APIRouter(prefix="/rivales", tags=["rivales"])
@@ -50,7 +50,7 @@ def listar(
 def crear(
     payload: schemas.RivalCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("partidos")),
 ):
     nombre = payload.nombre.strip()
     if not nombre:
@@ -76,7 +76,7 @@ def crear(
 def eliminar(
     id_rival: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("partidos")),
 ):
     rival = _assert_rival(db, id_rival, equipo.id_equipo)
     usados = db.query(models.Partido).filter(models.Partido.id_rival == id_rival).count()
@@ -186,7 +186,7 @@ def upsert_jugadora(
     id_rival: str,
     payload: schemas.RivalJugadorCreate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area("partidos")),
 ):
     _assert_rival(db, id_rival, equipo.id_equipo)
     existente = (
