@@ -9,6 +9,7 @@ from app import models, schemas
 from app.auth import get_current_equipo, get_equipo_admin, require_admin
 from app.database import get_db
 from app.permisos import CARGOS, CARGOS_UNICOS, normalize_cargo
+from app.realtime import publish_club
 
 router = APIRouter(prefix="/miembros", tags=["miembros"])
 
@@ -254,6 +255,14 @@ def invite_miembro(
         db.rollback()
         raise HTTPException(status_code=400, detail="Ya existe un miembro con ese correo")
     db.refresh(row)
+    publish_club(
+        equipo.id_equipo,
+        {
+            "type": "miembros.changed",
+            "action": "created",
+            "id_miembro": str(row.id_miembro),
+        },
+    )
     return _out(row, invite_token=token, correo_club=equipo.correo)
 
 
@@ -278,6 +287,14 @@ def reinvitar_miembro(
     token = _issue_invite(row)
     db.commit()
     db.refresh(row)
+    publish_club(
+        equipo.id_equipo,
+        {
+            "type": "miembros.changed",
+            "action": "reinvite",
+            "id_miembro": str(row.id_miembro),
+        },
+    )
     return _out(row, invite_token=token, correo_club=equipo.correo)
 
 
@@ -322,6 +339,15 @@ def transferir_administrador(
             detail="No se pudo traspasar la administración (restricción de base de datos). Reinicia el backend e inténtalo de nuevo.",
         )
     db.refresh(target)
+    publish_club(
+        equipo.id_equipo,
+        {
+            "type": "miembros.changed",
+            "action": "admin_transfer",
+            "id_miembro": str(target.id_miembro),
+            "refresh_sesion": True,
+        },
+    )
     return _out(target, correo_club=equipo.correo)
 
 
@@ -371,6 +397,17 @@ def update_miembro(
         row.invite_expires = None
     db.commit()
     db.refresh(row)
+    publish_club(
+        equipo.id_equipo,
+        {
+            "type": "miembros.changed",
+            "action": "updated",
+            "id_miembro": str(row.id_miembro),
+            "refresh_sesion": True,
+            "cargo": row.cargo,
+            "estado": row.estado,
+        },
+    )
     return _out(row, correo_club=equipo.correo)
 
 
@@ -397,6 +434,15 @@ def delete_miembro(
         )
     db.delete(row)
     db.commit()
+    publish_club(
+        equipo.id_equipo,
+        {
+            "type": "miembros.changed",
+            "action": "deleted",
+            "id_miembro": id_miembro,
+            "refresh_sesion": True,
+        },
+    )
     return None
 
 

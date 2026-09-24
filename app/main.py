@@ -27,6 +27,7 @@ from app.routers.rivales import router as rivales_router
 from app.routers.temporadas import router as temporadas_router
 from app.routers.uploads import router as uploads_router
 from app.routers.uploads import uploads_root
+from app.realtime import set_main_loop
 from app.seed import seed_catalogos
 
 logger = logging.getLogger("siete.schema")
@@ -242,6 +243,9 @@ def ensure_schema() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    import asyncio
+
+    set_main_loop(asyncio.get_running_loop())
     Base.metadata.create_all(bind=engine)
     ensure_schema()
     with engine.begin() as conn:
@@ -278,6 +282,7 @@ async def lifespan(_: FastAPI):
     finally:
         db.close()
     yield
+    set_main_loop(None)
 
 
 app = FastAPI(title="SIETE Balonmano API", version="2.1.0", lifespan=lifespan)
@@ -307,6 +312,11 @@ app.include_router(preparaciones_router, prefix="/api")
 app.include_router(miembros_router, prefix="/api")
 app.include_router(estadisticas_router, prefix="/api")
 app.include_router(uploads_router, prefix="/api")
+
+# WebSocket: include_router solo-WS puede quedar vacío en FastAPI 0.141+
+from app.routers.ws import club_ws as club_ws_endpoint
+
+app.add_api_websocket_route("/api/ws", club_ws_endpoint)
 
 uploads_path = Path(settings.uploads_dir).resolve()
 uploads_path.mkdir(parents=True, exist_ok=True)
