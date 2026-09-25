@@ -3,7 +3,8 @@ PyJWT>=2.8.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 sqlalchemy>=2.0.36
-psycopg2-binary>=2.9.10
+# Neon + Render (Python 3.12/3.14): psycopg3. No uses solo psycopg2 en 3.14.
+psycopg[binary]>=3.2.0
 pydantic-settings>=2.6.0
 python-dotenv>=1.0.1
 python-multipart>=0.0.9

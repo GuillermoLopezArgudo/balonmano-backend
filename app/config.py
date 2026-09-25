@@ -6,7 +6,7 @@ _DEV_AUTH_SECRET = "balonmano-dev-secret-change-me"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/balonmano"
+    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/balonmano"
     cors_origins: str = "http://localhost:5173"
     # Obligatorio vía .env — el default solo detecta configuración insegura
     auth_secret: str = _DEV_AUTH_SECRET
