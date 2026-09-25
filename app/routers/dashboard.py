@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
 from app.auth import get_current_equipo
 from app.database import get_db
-from app.routers.jugadores import _jugador_out
+from app.routers.jugadores import _jugador_out, _vinculo_equipo
 from app.routers.partidos import _partido_out
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -170,9 +170,9 @@ def jugador_detalle(
         .first()
     )
     if not jugador:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="Jugador no encontrado")
+    if not _vinculo_equipo(db, id_jugador, equipo.id_equipo):
+        raise HTTPException(status_code=403, detail="No pertenece a tu equipo")
 
     posiciones = [jp.posicion.nombre for jp in jugador.posiciones if jp.posicion]
     es_portero = any("portero" in (p or "").lower() for p in posiciones)

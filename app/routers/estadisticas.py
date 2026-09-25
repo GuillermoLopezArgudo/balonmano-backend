@@ -350,6 +350,7 @@ def _accion_out(fila: models.Accion) -> schemas.AccionOut:
         segundo=fila.segundo or 0,
         zona=fila.zona,
         zona_porteria=fila.zona_porteria,
+        es_contraataque=bool(getattr(fila, "es_contraataque", False)),
         id_rival_jugador=fila.id_rival_jugador,
         rival_dorsal=rj.dorsal if rj else None,
         rival_nombre=rj.nombre if rj else None,
@@ -372,6 +373,137 @@ def listar_acciones(
         .all()
     )
     return [_accion_out(f) for f in filas]
+
+
+def _add(val: int, delta: int) -> int:
+    return max(0, int(val or 0) + delta)
+
+
+def _tipo_flags(nombre: str) -> tuple[bool, bool, bool, str]:
+    n = (nombre or "").lower()
+    es_gol = "gol" in n and "recibid" not in n
+    es_gol_recibido = "gol" in n and "recibid" in n
+    es_tiro = es_gol or (
+        "lanzamiento" in n or "fallado" in n or "fuera" in n or "poste" in n
+    )
+    return es_gol, es_tiro, es_gol_recibido, n
+
+
+def _aplicar_efecto_accion(
+    db: Session,
+    *,
+    id_partido,
+    id_jugador,
+    tipo: models.TipoAccion,
+    zona: str | None,
+    es_contraataque: bool,
+    signo: int,
+) -> None:
+    """Aplica (+1) o revierte (-1) el efecto de una acción en estadísticas agregadas."""
+    es_gol, es_tiro, es_gol_recibido, nombre = _tipo_flags(tipo.nombre)
+
+    stats = (
+        db.query(models.EstadisticaJugador)
+        .filter(
+            models.EstadisticaJugador.id_partido == id_partido,
+            models.EstadisticaJugador.id_jugador == id_jugador,
+        )
+        .first()
+    )
+    if not stats and signo > 0:
+        stats = models.EstadisticaJugador(
+            id_partido=id_partido,
+            id_jugador=id_jugador,
+        )
+        db.add(stats)
+        db.flush()
+
+    if stats:
+        if es_gol:
+            stats.goles = _add(stats.goles, signo)
+            stats.lanzamientos = _add(stats.lanzamientos, signo)
+        elif es_tiro:
+            stats.lanzamientos = _add(stats.lanzamientos, signo)
+            stats.lanzamientos_fallados = _add(stats.lanzamientos_fallados, signo)
+        elif "asistencia" in nombre:
+            stats.asistencias = _add(stats.asistencias, signo)
+        elif "pérdida" in nombre or "perdida" in nombre:
+            stats.perdidas = _add(stats.perdidas, signo)
+        elif "recuperación" in nombre or "recuperacion" in nombre:
+            stats.recuperaciones = _add(stats.recuperaciones, signo)
+        elif "exclusión" in nombre or "exclusion" in nombre:
+            stats.exclusiones_2min = _add(stats.exclusiones_2min, signo)
+        elif "amarilla" in nombre:
+            stats.amarillas = _add(stats.amarillas, signo)
+        elif "roja" in nombre:
+            stats.rojas = _add(stats.rojas, signo)
+        elif "azul" in nombre:
+            stats.azules = _add(stats.azules, signo)
+
+    if es_tiro and zona:
+        zona_stats = (
+            db.query(models.EstadisticaLanzamiento)
+            .filter(
+                models.EstadisticaLanzamiento.id_partido == id_partido,
+                models.EstadisticaLanzamiento.id_jugador == id_jugador,
+            )
+            .first()
+        )
+        if not zona_stats and signo > 0:
+            zona_stats = models.EstadisticaLanzamiento(
+                id_partido=id_partido,
+                id_jugador=id_jugador,
+            )
+            db.add(zona_stats)
+            db.flush()
+        if zona_stats:
+            bucket = _zona_bucket(zona)
+            if bucket == "6m":
+                zona_stats.lanzamientos_6m = _add(zona_stats.lanzamientos_6m, signo)
+                if es_gol:
+                    zona_stats.goles_6m = _add(zona_stats.goles_6m, signo)
+            elif bucket == "9m":
+                zona_stats.lanzamientos_9m = _add(zona_stats.lanzamientos_9m, signo)
+                if es_gol:
+                    zona_stats.goles_9m = _add(zona_stats.goles_9m, signo)
+            elif bucket == "7m":
+                zona_stats.lanzamientos_7m = _add(zona_stats.lanzamientos_7m, signo)
+                if es_gol:
+                    zona_stats.goles_7m = _add(zona_stats.goles_7m, signo)
+            elif bucket == "extremo":
+                zona_stats.lanzamientos_extremo = _add(zona_stats.lanzamientos_extremo, signo)
+                if es_gol:
+                    zona_stats.goles_extremo = _add(zona_stats.goles_extremo, signo)
+            if es_contraataque:
+                zona_stats.lanzamientos_contraataque = _add(
+                    zona_stats.lanzamientos_contraataque, signo
+                )
+                if es_gol:
+                    zona_stats.goles_contraataque = _add(zona_stats.goles_contraataque, signo)
+
+    if "parada" in nombre or es_gol_recibido:
+        rebuild_estadistica_portero(
+            db,
+            id_partido=id_partido,
+            id_jugador=id_jugador,
+        )
+
+
+def _get_accion_equipo(
+    db: Session,
+    id_accion,
+    equipo: models.Equipo,
+) -> models.Accion:
+    fila = (
+        db.query(models.Accion)
+        .options(joinedload(models.Accion.rival_jugador), joinedload(models.Accion.tipo_accion))
+        .filter(models.Accion.id_accion == id_accion)
+        .first()
+    )
+    if not fila:
+        raise HTTPException(status_code=404, detail="Acción no encontrada")
+    _assert_partido(db, fila.id_partido, equipo.id_equipo)
+    return fila
 
 
 @router.post("/acciones/", response_model=schemas.AccionOut, status_code=status.HTTP_201_CREATED)
@@ -401,6 +533,114 @@ def crear_accion(
         ) from exc
 
 
+@router.patch("/acciones/{id_accion}", response_model=schemas.AccionOut)
+def actualizar_accion(
+    id_accion: str,
+    payload: schemas.AccionUpdate,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
+):
+    try:
+        fila = _get_accion_equipo(db, id_accion, equipo)
+        tipo_old = fila.tipo_accion or db.get(models.TipoAccion, fila.id_tipo_accion)
+        if not tipo_old:
+            raise HTTPException(status_code=404, detail="Tipo de acción no encontrado")
+
+        data = payload.model_dump(exclude_unset=True)
+        id_jugador_new = data.get("id_jugador", fila.id_jugador)
+        id_tipo_new = data.get("id_tipo_accion", fila.id_tipo_accion)
+
+        if id_jugador_new != fila.id_jugador:
+            _assert_jugador_club(db, id_jugador_new, equipo.id_equipo)
+
+        tipo_new = db.get(models.TipoAccion, id_tipo_new)
+        if not tipo_new:
+            raise HTTPException(status_code=404, detail="Tipo de acción no encontrado")
+
+        if "id_rival_jugador" in data and data["id_rival_jugador"]:
+            partido = _assert_partido(db, fila.id_partido, equipo.id_equipo)
+            rj = db.get(models.RivalJugador, data["id_rival_jugador"])
+            if not rj or not rj.activo:
+                raise HTTPException(status_code=404, detail="Jugadora rival no encontrada")
+            if partido.id_rival and rj.id_rival != partido.id_rival:
+                raise HTTPException(
+                    status_code=400,
+                    detail="La jugadora rival no pertenece al rival de este partido",
+                )
+
+        # Revertir efecto anterior y aplicar el nuevo
+        _aplicar_efecto_accion(
+            db,
+            id_partido=fila.id_partido,
+            id_jugador=fila.id_jugador,
+            tipo=tipo_old,
+            zona=fila.zona,
+            es_contraataque=bool(fila.es_contraataque),
+            signo=-1,
+        )
+
+        for key, val in data.items():
+            setattr(fila, key, val)
+
+        _aplicar_efecto_accion(
+            db,
+            id_partido=fila.id_partido,
+            id_jugador=fila.id_jugador,
+            tipo=tipo_new,
+            zona=fila.zona,
+            es_contraataque=bool(fila.es_contraataque),
+            signo=1,
+        )
+
+        db.commit()
+        fila = _get_accion_equipo(db, id_accion, equipo)
+        return _accion_out(fila)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al actualizar la acción: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.delete("/acciones/{id_accion}", status_code=status.HTTP_204_NO_CONTENT)
+def borrar_accion(
+    id_accion: str,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_equipo_area("directo")),
+):
+    try:
+        fila = _get_accion_equipo(db, id_accion, equipo)
+        tipo = fila.tipo_accion or db.get(models.TipoAccion, fila.id_tipo_accion)
+        if not tipo:
+            raise HTTPException(status_code=404, detail="Tipo de acción no encontrado")
+
+        id_partido = fila.id_partido
+        id_jugador = fila.id_jugador
+        _aplicar_efecto_accion(
+            db,
+            id_partido=id_partido,
+            id_jugador=id_jugador,
+            tipo=tipo,
+            zona=fila.zona,
+            es_contraataque=bool(fila.es_contraataque),
+            signo=-1,
+        )
+        db.delete(fila)
+        db.commit()
+        return None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al borrar la acción: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
 def _crear_accion_impl(
     payload: schemas.AccionCreate,
     db: Session,
@@ -424,98 +664,17 @@ def _crear_accion_impl(
 
     fila = models.Accion(**payload.model_dump())
     db.add(fila)
+    db.flush()
 
-    stats = (
-        db.query(models.EstadisticaJugador)
-        .filter(
-            models.EstadisticaJugador.id_partido == payload.id_partido,
-            models.EstadisticaJugador.id_jugador == payload.id_jugador,
-        )
-        .first()
+    _aplicar_efecto_accion(
+        db,
+        id_partido=payload.id_partido,
+        id_jugador=payload.id_jugador,
+        tipo=tipo,
+        zona=payload.zona,
+        es_contraataque=bool(payload.es_contraataque),
+        signo=1,
     )
-    if not stats:
-        stats = models.EstadisticaJugador(
-            id_partido=payload.id_partido,
-            id_jugador=payload.id_jugador,
-        )
-        db.add(stats)
-        db.flush()
-
-    nombre = tipo.nombre.lower()
-    es_gol = "gol" in nombre and "recibid" not in nombre
-    es_tiro = es_gol or (
-        "lanzamiento" in nombre or "fallado" in nombre or "fuera" in nombre or "poste" in nombre
-    )
-
-    if es_gol:
-        stats.goles += 1
-        stats.lanzamientos += 1
-    elif es_tiro:
-        stats.lanzamientos += 1
-        stats.lanzamientos_fallados += 1
-    elif "asistencia" in nombre:
-        stats.asistencias += 1
-    elif "pérdida" in nombre or "perdida" in nombre:
-        stats.perdidas += 1
-    elif "recuperación" in nombre or "recuperacion" in nombre:
-        stats.recuperaciones += 1
-    elif "exclusión" in nombre or "exclusion" in nombre:
-        stats.exclusiones_2min += 1
-    elif "amarilla" in nombre:
-        stats.amarillas += 1
-    elif "roja" in nombre:
-        stats.rojas += 1
-    elif "azul" in nombre:
-        stats.azules += 1
-
-    # Desglose por zona → tabla estadistica_lanzamiento (no estadistica_jugador)
-    if es_tiro and payload.zona:
-        zona_stats = (
-            db.query(models.EstadisticaLanzamiento)
-            .filter(
-                models.EstadisticaLanzamiento.id_partido == payload.id_partido,
-                models.EstadisticaLanzamiento.id_jugador == payload.id_jugador,
-            )
-            .first()
-        )
-        if not zona_stats:
-            zona_stats = models.EstadisticaLanzamiento(
-                id_partido=payload.id_partido,
-                id_jugador=payload.id_jugador,
-            )
-            db.add(zona_stats)
-            db.flush()
-
-        z = payload.zona.lower()
-        if z in ("6m_izq", "6m_cen", "6m_der", "pivote", "6m"):
-            zona_stats.lanzamientos_6m += 1
-            if es_gol:
-                zona_stats.goles_6m += 1
-        elif z in ("9m_izq", "9m_cen", "9m_der", "frontal", "interior", "9m"):
-            zona_stats.lanzamientos_9m += 1
-            if es_gol:
-                zona_stats.goles_9m += 1
-        elif z in ("7m",):
-            zona_stats.lanzamientos_7m += 1
-            if es_gol:
-                zona_stats.goles_7m += 1
-        elif z in ("ext_izq", "ext_der", "extremo"):
-            zona_stats.lanzamientos_extremo += 1
-            if es_gol:
-                zona_stats.goles_extremo += 1
-
-        if payload.es_contraataque:
-            zona_stats.lanzamientos_contraataque += 1
-            if es_gol:
-                zona_stats.goles_contraataque += 1
-
-    # Parada / gol recibido: recalcular totales de portera desde acciones
-    if "parada" in nombre or ("gol" in nombre and "recibid" in nombre):
-        rebuild_estadistica_portero(
-            db,
-            id_partido=payload.id_partido,
-            id_jugador=payload.id_jugador,
-        )
 
     db.commit()
     db.refresh(fila)

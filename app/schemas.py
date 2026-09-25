@@ -327,6 +327,17 @@ class AccionCreate(BaseModel):
     id_rival_jugador: uuid.UUID | None = None
 
 
+class AccionUpdate(BaseModel):
+    id_jugador: uuid.UUID | None = None
+    id_tipo_accion: int | None = None
+    minuto: int | None = Field(default=None, ge=0, le=80)
+    segundo: int | None = Field(default=None, ge=0, le=59)
+    zona: str | None = Field(default=None, max_length=50)
+    zona_porteria: str | None = Field(default=None, max_length=50)
+    es_contraataque: bool | None = None
+    id_rival_jugador: uuid.UUID | None = None
+
+
 class AccionOut(AccionCreate):
     model_config = ConfigDict(from_attributes=True)
 
