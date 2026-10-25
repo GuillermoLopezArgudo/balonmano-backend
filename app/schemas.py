@@ -745,8 +745,8 @@ class FederacionPatch(BaseModel):
 class CuotaBulkIn(BaseModel):
     id_jugadores: list[uuid.UUID] = Field(min_length=1)
     accion: str = Field(
-        pattern="^(limpiar|federacion_pagada|federacion_pendiente)$",
-        description="limpiar = borrar todos los pagos de la selección",
+        pattern="^(limpiar|federacion_pagada|federacion_pendiente|cuotas_pagadas|cuotas_pendientes)$",
+        description="cuotas_pagadas = marcar sep–jun como pagadas en la selección",
     )
 
 

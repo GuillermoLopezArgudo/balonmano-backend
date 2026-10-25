@@ -366,6 +366,32 @@ def bulk_cuotas(
             models.FederacionPago.id_temporada == temporada.id_temporada,
             models.FederacionPago.id_jugador.in_(valid),
         ).delete(synchronize_session=False)
+    elif payload.accion in ("cuotas_pagadas", "cuotas_pendientes"):
+        pagado = payload.accion == "cuotas_pagadas"
+        ahora = datetime.utcnow()
+        existentes = (
+            db.query(models.CuotaMensual)
+            .filter(
+                models.CuotaMensual.id_equipo == equipo.id_equipo,
+                models.CuotaMensual.id_temporada == temporada.id_temporada,
+                models.CuotaMensual.id_jugador.in_(valid),
+            )
+            .all()
+        )
+        por_clave = {(row.id_jugador, row.mes): row for row in existentes}
+        for jid in valid:
+            for mes in MESES:
+                row = por_clave.get((jid, mes))
+                if not row:
+                    row = models.CuotaMensual(
+                        id_equipo=equipo.id_equipo,
+                        id_temporada=temporada.id_temporada,
+                        id_jugador=jid,
+                        mes=mes,
+                    )
+                    db.add(row)
+                row.pagado = pagado
+                row.pagado_en = ahora if pagado else None
     else:
         pagado = payload.accion == "federacion_pagada"
         for jid in valid:
