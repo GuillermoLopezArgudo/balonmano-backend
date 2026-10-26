@@ -16,6 +16,22 @@ def _assert_partido(db: Session, id_partido, id_equipo) -> models.Partido:
     return partido
 
 
+def _validar_contexto(tipo: models.TipoAccion, contexto: str | None) -> str | None:
+    """Lanzamiento exige cómo se llega; pérdida exige la causa. El resto no lleva contexto."""
+    n = (tipo.nombre or "").lower()
+    es_perdida = "perdida" in n or "pérdida" in n
+    es_tiro = n == "gol" or "lanzamiento" in n or "parada" in n or ("gol" in n and "recibid" in n)
+    if es_perdida:
+        if contexto not in schemas.CONTEXTOS_PERDIDA:
+            raise HTTPException(status_code=400, detail="Elige el tipo de pérdida")
+        return contexto
+    if es_tiro:
+        if contexto not in schemas.CONTEXTOS_LLEGADA:
+            raise HTTPException(status_code=400, detail="Elige cómo llega el lanzamiento")
+        return contexto
+    return None
+
+
 def _assert_jugador_club(db: Session, id_jugador, id_equipo) -> None:
     vinculo = (
         db.query(models.JugadorEquipo)
@@ -351,6 +367,7 @@ def _accion_out(fila: models.Accion) -> schemas.AccionOut:
         zona=fila.zona,
         zona_porteria=fila.zona_porteria,
         es_contraataque=bool(getattr(fila, "es_contraataque", False)),
+        contexto=getattr(fila, "contexto", None),
         id_rival_jugador=fila.id_rival_jugador,
         rival_dorsal=rj.dorsal if rj else None,
         rival_nombre=rj.nombre if rj else None,
@@ -557,6 +574,9 @@ def actualizar_accion(
         if not tipo_new:
             raise HTTPException(status_code=404, detail="Tipo de acción no encontrado")
 
+        contexto_in = data["contexto"] if "contexto" in data else getattr(fila, "contexto", None)
+        data["contexto"] = _validar_contexto(tipo_new, contexto_in)
+
         if "id_rival_jugador" in data and data["id_rival_jugador"]:
             partido = _assert_partido(db, fila.id_partido, equipo.id_equipo)
             rj = db.get(models.RivalJugador, data["id_rival_jugador"])
@@ -662,7 +682,9 @@ def _crear_accion_impl(
                 detail="La jugadora rival no pertenece al rival de este partido",
             )
 
-    fila = models.Accion(**payload.model_dump())
+    data = payload.model_dump()
+    data["contexto"] = _validar_contexto(tipo, payload.contexto)
+    fila = models.Accion(**data)
     db.add(fila)
     db.flush()
 

@@ -501,6 +501,8 @@ class Accion(Base):
     zona: Mapped[str | None] = mapped_column(String(50))
     zona_porteria: Mapped[str | None] = mapped_column(String(50))
     es_contraataque: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Lanzamiento: cómo se llega. Pérdida: causa.
+    contexto: Mapped[str | None] = mapped_column(String(30))
     id_rival_jugador: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("rival_jugador.id_rival_jugador", ondelete="SET NULL"), nullable=True
     )

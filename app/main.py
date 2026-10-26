@@ -63,6 +63,7 @@ def ensure_schema() -> None:
         "ALTER TABLE convocatoria ADD COLUMN IF NOT EXISTS zona_defensa VARCHAR(30)",
         "ALTER TABLE estadistica_jugador ADD COLUMN IF NOT EXISTS azules INTEGER DEFAULT 0",
         "ALTER TABLE accion ADD COLUMN IF NOT EXISTS es_contraataque BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE accion ADD COLUMN IF NOT EXISTS contexto VARCHAR(30)",
         "ALTER TABLE alineacion_plantilla ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'ataque'",
         "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS balon_x DOUBLE PRECISION",
         "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS balon_y DOUBLE PRECISION",

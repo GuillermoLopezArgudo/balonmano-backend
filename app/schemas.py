@@ -315,6 +315,12 @@ class EstadisticaPorteroOut(EstadisticaPorteroCreate):
     id_estadistica: uuid.UUID
 
 
+# Cómo se llega al lanzamiento (la zona sola no distingue la trayectoria).
+CONTEXTOS_LLEGADA = frozenset({"entrada", "giro_izq", "giro_der", "punto_debil", "directo"})
+# Causa de una pérdida.
+CONTEXTOS_PERDIDA = frozenset({"falta_ataque", "pasos", "dobles", "mal_pase", "interceptado"})
+
+
 class AccionCreate(BaseModel):
     id_partido: uuid.UUID
     id_jugador: uuid.UUID
@@ -324,6 +330,7 @@ class AccionCreate(BaseModel):
     zona: str | None = Field(default=None, max_length=50)
     zona_porteria: str | None = Field(default=None, max_length=50)
     es_contraataque: bool = False
+    contexto: str | None = Field(default=None, max_length=30)
     id_rival_jugador: uuid.UUID | None = None
 
 
@@ -335,6 +342,7 @@ class AccionUpdate(BaseModel):
     zona: str | None = Field(default=None, max_length=50)
     zona_porteria: str | None = Field(default=None, max_length=50)
     es_contraataque: bool | None = None
+    contexto: str | None = Field(default=None, max_length=30)
     id_rival_jugador: uuid.UUID | None = None
 
 
