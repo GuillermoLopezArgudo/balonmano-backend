@@ -2,10 +2,11 @@ import logging
 from datetime import date, datetime
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
+from app.audit import actor_from_session, client_meta, log_audit
 from app.auth import (
     create_password_reset_token,
     create_token,
@@ -194,8 +195,28 @@ def reset_password(payload: schemas.ResetPasswordIn, db: Session = Depends(get_d
 
 
 @router.post("/login", response_model=schemas.AuthOut)
-def login(payload: schemas.LoginIn, db: Session = Depends(get_db)):
+def login(
+    payload: schemas.LoginIn,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     correo = payload.correo.strip().lower()
+    ip, ua = client_meta(request)
+
+    def _fail(id_equipo=None, nombre=None):
+        if id_equipo:
+            log_audit(
+                db,
+                id_equipo=id_equipo,
+                accion="auth.login_fail",
+                resumen="Intento de acceso fallido",
+                actor_nombre=nombre,
+                actor_correo=correo,
+                ip=ip,
+                user_agent=ua,
+                commit=True,
+            )
+        raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
 
     # 1) Cuenta del club (dueño)
     equipo = (
@@ -204,7 +225,9 @@ def login(payload: schemas.LoginIn, db: Session = Depends(get_db)):
         .filter(models.Equipo.correo == correo)
         .first()
     )
-    if equipo and verify_password(payload.password, equipo.password_hash):
+    if equipo:
+        if not verify_password(payload.password, equipo.password_hash):
+            _fail(equipo.id_equipo, "Cuenta del club")
         if needs_rehash(equipo.password_hash):
             equipo.password_hash = hash_password(payload.password)
             db.commit()
@@ -213,6 +236,18 @@ def login(payload: schemas.LoginIn, db: Session = Depends(get_db)):
         from app.routers.miembros import miembro_para_cuenta_club
 
         miembro_club = miembro_para_cuenta_club(db, equipo)
+        log_audit(
+            db,
+            id_equipo=equipo.id_equipo,
+            accion="auth.login",
+            resumen="Inicio de sesión",
+            id_miembro=miembro_club.id_miembro if miembro_club else None,
+            actor_nombre=(miembro_club.nombre if miembro_club else "Cuenta del club"),
+            actor_correo=correo,
+            ip=ip,
+            user_agent=ua,
+            commit=True,
+        )
         return _auth_out(db, equipo, miembro=miembro_club)
 
     # 2) Miembro invitado con contraseña propia
@@ -226,14 +261,50 @@ def login(payload: schemas.LoginIn, db: Session = Depends(get_db)):
         )
         .first()
     )
-    if not miembro or not verify_password(payload.password, miembro.password_hash):
+    if not miembro:
         raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
+    if not verify_password(payload.password, miembro.password_hash):
+        _fail(miembro.id_equipo, miembro.nombre)
     if needs_rehash(miembro.password_hash):
         miembro.password_hash = hash_password(payload.password)
         db.commit()
         db.refresh(miembro)
     equipo = miembro.equipo or _equipo_out(db, miembro.id_equipo)
+    log_audit(
+        db,
+        id_equipo=equipo.id_equipo,
+        accion="auth.login",
+        resumen="Inicio de sesión",
+        id_miembro=miembro.id_miembro,
+        actor_nombre=miembro.nombre,
+        actor_correo=correo,
+        ip=ip,
+        user_agent=ua,
+        commit=True,
+    )
     return _auth_out(db, equipo, miembro=miembro)
+
+
+@router.post("/logout")
+def logout(
+    request: Request,
+    db: Session = Depends(get_db),
+    session=Depends(get_current_session),
+):
+    """Registra el cierre de sesión (el token se invalida en el cliente)."""
+    ip, ua = client_meta(request)
+    actor = actor_from_session(session)
+    log_audit(
+        db,
+        id_equipo=session.equipo.id_equipo,
+        accion="auth.logout",
+        resumen="Cierre de sesión",
+        ip=ip,
+        user_agent=ua,
+        commit=True,
+        **actor,
+    )
+    return {"ok": True}
 
 
 @router.get("/invitacion/{token}", response_model=schemas.InvitacionInfoOut)
@@ -432,6 +503,7 @@ def actualizar_perfil_miembro(
 @router.patch("/me/password", response_model=schemas.SesionOut)
 def cambiar_password(
     payload: schemas.PasswordChangeIn,
+    request: Request,
     session=Depends(get_current_session),
     db: Session = Depends(get_db),
 ):
@@ -454,6 +526,18 @@ def cambiar_password(
         if miembro:
             miembro.sesion_version = int(miembro.sesion_version or 0) + 1
     db.commit()
+    ip, ua = client_meta(request)
+    actor = actor_from_session(session)
+    log_audit(
+        db,
+        id_equipo=equipo.id_equipo,
+        accion="auth.password",
+        resumen="Cambió la contraseña (sesiones revocadas)",
+        ip=ip,
+        user_agent=ua,
+        commit=True,
+        **actor,
+    )
     publish_club(
         equipo.id_equipo,
         {

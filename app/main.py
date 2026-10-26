@@ -2,16 +2,20 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from starlette.responses import Response
 
 from app import models  # noqa: F401 — registra modelos en metadata
+from app.audit import client_meta, describe_path, log_audit, should_skip_path
+from app.auth import parse_token_full
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.routers.auth import router as auth_router
 from app.routers.alineaciones import router as alineaciones_router
 from app.routers.asistencias import router as asistencias_router
+from app.routers.auditoria import router as auditoria_router
 from app.routers.jugadas import router as jugadas_router
 from app.routers.preparaciones import router as preparaciones_router
 from app.routers.catalogos import router as catalogos_router
@@ -346,6 +350,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def audit_write_middleware(request: Request, call_next):
+    """Registra mutaciones autenticadas exitosas (sin ruido de directo/health)."""
+    response: Response = await call_next(request)
+    try:
+        method = request.method.upper()
+        path = request.url.path
+        if method not in ("POST", "PUT", "PATCH", "DELETE"):
+            return response
+        if response.status_code >= 400:
+            return response
+        if should_skip_path(path):
+            return response
+        # Evitar doble registro de logout (ya se escribe en el endpoint)
+        if path.rstrip("/").endswith("/auth/logout"):
+            return response
+
+        auth = request.headers.get("authorization") or ""
+        if not auth.lower().startswith("bearer "):
+            return response
+        token = auth.split(" ", 1)[1].strip()
+        try:
+            claims = parse_token_full(token)
+        except Exception:
+            return response
+
+        id_equipo = claims.get("id_equipo")
+        id_miembro = claims.get("id_miembro")
+        if not id_equipo:
+            return response
+
+        codigo, resumen = describe_path(method, path)
+        ip, ua = client_meta(request)
+        db = SessionLocal()
+        try:
+            actor_nombre = None
+            actor_correo = None
+            if id_miembro:
+                m = (
+                    db.query(models.MiembroClub)
+                    .filter(models.MiembroClub.id_miembro == id_miembro)
+                    .first()
+                )
+                if m:
+                    actor_nombre = m.nombre
+                    actor_correo = m.correo
+            if not actor_correo:
+                eq = (
+                    db.query(models.Equipo)
+                    .filter(models.Equipo.id_equipo == id_equipo)
+                    .first()
+                )
+                actor_nombre = actor_nombre or "Cuenta del club"
+                actor_correo = eq.correo if eq else None
+
+            log_audit(
+                db,
+                id_equipo=id_equipo,
+                id_miembro=id_miembro,
+                actor_nombre=actor_nombre,
+                actor_correo=actor_correo,
+                accion=codigo,
+                resumen=resumen,
+                detalle={"method": method, "path": path, "status": response.status_code},
+                ip=ip,
+                user_agent=ua,
+                commit=True,
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("audit middleware")
+    return response
+
+
 app.include_router(auth_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(equipos_router, prefix="/api")
@@ -363,6 +443,7 @@ app.include_router(preparaciones_router, prefix="/api")
 app.include_router(miembros_router, prefix="/api")
 app.include_router(estadisticas_router, prefix="/api")
 app.include_router(uploads_router, prefix="/api")
+app.include_router(auditoria_router, prefix="/api")
 
 # WebSocket: include_router solo-WS puede quedar vacío en FastAPI 0.141+
 from app.routers.ws import club_ws as club_ws_endpoint

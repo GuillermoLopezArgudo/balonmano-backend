@@ -72,6 +72,34 @@ def crear(
     return rival
 
 
+@router.patch("/{id_rival}", response_model=schemas.RivalOut)
+def actualizar(
+    id_rival: str,
+    payload: schemas.RivalUpdate,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_equipo_area("partidos")),
+):
+    rival = _assert_rival(db, id_rival, equipo.id_equipo)
+    nombre = payload.nombre.strip()
+    if not nombre:
+        raise HTTPException(status_code=400, detail="Nombre obligatorio")
+    duplicado = (
+        db.query(models.Rival)
+        .filter(
+            models.Rival.id_equipo == equipo.id_equipo,
+            models.Rival.nombre.ilike(nombre),
+            models.Rival.id_rival != rival.id_rival,
+        )
+        .first()
+    )
+    if duplicado:
+        raise HTTPException(status_code=400, detail="Ya existe un rival con ese nombre")
+    rival.nombre = nombre
+    db.commit()
+    db.refresh(rival)
+    return rival
+
+
 @router.delete("/{id_rival}", status_code=status.HTTP_204_NO_CONTENT)
 def eliminar(
     id_rival: str,

@@ -72,6 +72,9 @@ class Equipo(Base):
     federacion_pagos: Mapped[list["FederacionPago"]] = relationship(
         back_populates="equipo", cascade="all, delete-orphan"
     )
+    audit_logs: Mapped[list["AuditLog"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
+    )
 
 
 class DatosEquipo(Base):
@@ -849,3 +852,29 @@ class FederacionPago(Base):
     equipo: Mapped["Equipo"] = relationship(back_populates="federacion_pagos")
     jugador: Mapped["Jugador"] = relationship()
     temporada: Mapped["Temporada"] = relationship()
+
+
+class AuditLog(Base):
+    """Accesos y cambios relevantes por club (retención ~180 días)."""
+
+    __tablename__ = "audit_log"
+
+    id_audit: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_miembro: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("miembro_club.id_miembro", ondelete="SET NULL"), nullable=True, index=True
+    )
+    actor_nombre: Mapped[str | None] = mapped_column(String(150))
+    actor_correo: Mapped[str | None] = mapped_column(String(255))
+    accion: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    resumen: Mapped[str] = mapped_column(String(300), nullable=False)
+    entidad: Mapped[str | None] = mapped_column(String(80))
+    id_entidad: Mapped[str | None] = mapped_column(String(80))
+    detalle: Mapped[str | None] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(400))
+    creado_en: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="audit_logs")
