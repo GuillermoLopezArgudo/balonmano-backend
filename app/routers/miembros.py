@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.auth import get_current_equipo, get_equipo_admin, require_admin
+from app.auth import get_equipo_admin, require_admin
 from app.database import get_db
 from app.permisos import CARGOS, CARGOS_UNICOS, normalize_cargo
 from app.realtime import publish_club
@@ -213,7 +213,7 @@ def _out(
 @router.get("/", response_model=list[schemas.MiembroOut])
 def list_miembros(
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_admin),
 ):
     _ensure_owner(db, equipo)
     rows = (

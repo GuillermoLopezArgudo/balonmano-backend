@@ -1,9 +1,28 @@
+import re
 import uuid
 from datetime import date, datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from app.auth import hash_password as hash_password  # reexport
+
+
+def _password_fuerte(v: str) -> str:
+    if (
+        len(v) < 8
+        or not re.search(r"[a-z]", v)
+        or not re.search(r"[A-Z]", v)
+        or not re.search(r"\d", v)
+    ):
+        raise ValueError(
+            "La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula y un número."
+        )
+    return v
+
+
+PasswordNueva = Annotated[str, Field(min_length=8, max_length=128), AfterValidator(_password_fuerte)]
+
 
 class DatosEquipoIn(BaseModel):
     nombre: str = Field(min_length=1, max_length=150)
@@ -35,7 +54,7 @@ class DatosEquipoUpdate(BaseModel):
 
 class EquipoCreate(BaseModel):
     correo: str = Field(min_length=3, max_length=255)
-    password: str = Field(min_length=8, max_length=128)
+    password: PasswordNueva
     datos: DatosEquipoIn
 
 
@@ -51,7 +70,7 @@ class CuentaUpdate(BaseModel):
     correo: str | None = Field(default=None, min_length=3, max_length=255)
     # actual puede ser corta (cuentas legacy); la nueva exige 8+
     password_actual: str | None = Field(default=None, min_length=1, max_length=128)
-    password_nueva: str | None = Field(default=None, min_length=8, max_length=128)
+    password_nueva: PasswordNueva | None = None
     nombre_display: str | None = Field(default=None, max_length=150)
     entrenador_nombre: str | None = Field(default=None, max_length=150)
 
@@ -119,6 +138,10 @@ class JugadorCreate(BaseModel):
     id_posicion: int | None = None
     fecha_alta: date | None = None
     activo: bool = True
+    disponibilidad: str = Field(
+        default="disponible",
+        pattern="^(disponible|dudosa|lesion|sancion)$",
+    )
 
 
 class JugadorUpdate(BaseModel):
@@ -131,6 +154,10 @@ class JugadorUpdate(BaseModel):
     dorsal: int | None = Field(default=None, ge=0, le=99)
     id_posicion: int | None = None
     activo: bool | None = None
+    disponibilidad: str | None = Field(
+        default=None,
+        pattern="^(disponible|dudosa|lesion|sancion)$",
+    )
 
 
 class JugadorOut(BaseModel):
@@ -149,6 +176,7 @@ class JugadorOut(BaseModel):
     posiciones: list[str] = []
     id_posicion: int | None = None
     activo: bool = True
+    disponibilidad: str = "disponible"
 
 class PartidoCreate(BaseModel):
     """Crea un partido del club autenticado contra un rival propio."""
@@ -160,22 +188,24 @@ class PartidoCreate(BaseModel):
     jornada: int | None = Field(default=None, ge=1)
     pabellon: str | None = Field(default=None, max_length=200)
     competicion: str | None = Field(default=None, max_length=100)
-    img_portada: str | None = Field(default=None, max_length=255)
     goles_local: int = Field(default=0, ge=0)
     goles_visitante: int = Field(default=0, ge=0)
-    estado: str = Field(default="programado", pattern="^(programado|aplazado|jugado|no_disputado)$")
+    estado: str = Field(
+        default="programado", pattern="^(programado|aplazado|jugado|sin_resultado)$"
+    )
 
 
 class PartidoUpdate(BaseModel):
+    id_rival: uuid.UUID | None = None
+    es_local: bool | None = None
     goles_local: int | None = Field(default=None, ge=0)
     goles_visitante: int | None = Field(default=None, ge=0)
     jornada: int | None = Field(default=None, ge=1)
     fecha: datetime | None = None
     pabellon: str | None = Field(default=None, max_length=200)
     competicion: str | None = Field(default=None, max_length=100)
-    img_portada: str | None = Field(default=None, max_length=255)
     estado: str | None = Field(
-        default=None, pattern="^(programado|aplazado|jugado|no_disputado)$"
+        default=None, pattern="^(programado|aplazado|jugado|sin_resultado)$"
     )
 
 
@@ -193,7 +223,6 @@ class PartidoOut(BaseModel):
     jornada: int | None = None
     pabellon: str | None = None
     competicion: str | None = None
-    img_portada: str | None = None
     goles_local: int
     goles_visitante: int
     estado: str = "programado"
@@ -363,6 +392,9 @@ class ResumenJugador(BaseModel):
     asistencias: int
     lanzamientos: int
     perdidas: int = 0
+    recuperaciones: int = 0
+    faltas_cometidas: int = 0
+    faltas_recibidas: int = 0
     amarillas: int = 0
     exclusiones_2min: int = 0
     rojas: int = 0
@@ -398,7 +430,23 @@ class SesionOut(BaseModel):
 
 class PasswordChangeIn(BaseModel):
     password_actual: str = Field(min_length=1, max_length=128)
-    password_nueva: str = Field(min_length=8, max_length=128)
+    password_nueva: PasswordNueva
+
+
+class ForgotPasswordIn(BaseModel):
+    correo: str = Field(min_length=3, max_length=255)
+
+
+class ForgotPasswordOut(BaseModel):
+    ok: bool = True
+    message: str
+    # Solo en desarrollo / sin SMTP: facilita probar el flujo
+    reset_url: str | None = None
+
+
+class ResetPasswordIn(BaseModel):
+    token: str = Field(min_length=20, max_length=2000)
+    password: PasswordNueva
 
 
 class MiembroPerfilUpdate(BaseModel):
@@ -407,7 +455,7 @@ class MiembroPerfilUpdate(BaseModel):
 
 class AceptarInvitacionIn(BaseModel):
     token: str = Field(min_length=10, max_length=128)
-    password: str = Field(min_length=8, max_length=128)
+    password: PasswordNueva
     nombre: str | None = Field(default=None, min_length=2, max_length=150)
 
 
@@ -423,7 +471,7 @@ class InvitacionInfoOut(BaseModel):
 
 class RegistroIn(BaseModel):
     correo: str = Field(min_length=3, max_length=255)
-    password: str = Field(min_length=8, max_length=128)
+    password: PasswordNueva
     nombre: str = Field(min_length=1, max_length=150)
     entrenador_nombre: str | None = Field(default=None, max_length=150)
     categoria: str | None = Field(default=None, max_length=100)
@@ -443,6 +491,18 @@ class DashboardOut(BaseModel):
     efectividad_por_posicion: list[dict]
     ultimos_partidos: list[PartidoOut]
     proximos_partidos: list[PartidoOut]
+    paradas: int = 0
+    lanzamientos_recibidos: int = 0
+    goles_recibidos: int = 0
+    efectividad_paradas: float = 0.0
+
+
+class JugadorAsistenciaResumen(BaseModel):
+    sesiones: int = 0
+    presentes: int = 0
+    faltas: int = 0
+    justificadas: int = 0
+    pct_asistencia: float = 0.0
 
 
 class JugadorDetalleOut(BaseModel):
@@ -454,6 +514,9 @@ class JugadorDetalleOut(BaseModel):
     minutos_jugados: int
     partidos: int
     perdidas: int = 0
+    recuperaciones: int = 0
+    faltas_cometidas: int = 0
+    faltas_recibidas: int = 0
     pct_perdidas: float = 0.0
     amarillas: int = 0
     exclusiones_2min: int = 0
@@ -468,6 +531,7 @@ class JugadorDetalleOut(BaseModel):
     zonas: dict
     mapa_paradas: dict = {}
     ultimos_partidos: list[dict] = []
+    asistencia_entrenamientos: JugadorAsistenciaResumen | None = None
 
 
 ZONA_CAMPO_PATTERN = (
@@ -498,12 +562,12 @@ class ConvocatoriaItemOut(BaseModel):
 class ConvocatoriaOut(BaseModel):
     id_partido: uuid.UUID
     items: list[ConvocatoriaItemOut]
-    confirmada: bool = False
+    estado: str = Field(default="borrador", pattern="^(borrador|guardada)$")
 
 
 class ConvocatoriaPut(BaseModel):
     items: list[ConvocatoriaItemIn]
-    confirmada: bool = False
+    estado: str = Field(default="borrador", pattern="^(borrador|guardada)$")
 
 
 class AlineacionItemIn(BaseModel):
@@ -610,6 +674,7 @@ class JugadaCreate(BaseModel):
     fase: str = Field(default="ataque", pattern="^(ataque|defensa|completo)$")
     ambito: str = Field(default="tactica", pattern="^(tactica|fisico)$")
     descripcion: str | None = Field(default=None, max_length=4000)
+    fecha_sesion: datetime | None = None
     piezas: list[JugadaPiezaIn] = []
     pasos: list[JugadaPasoIn] = []
 
@@ -619,6 +684,7 @@ class JugadaUpdate(BaseModel):
     fase: str | None = Field(default=None, pattern="^(ataque|defensa|completo)$")
     ambito: str | None = Field(default=None, pattern="^(tactica|fisico)$")
     descripcion: str | None = Field(default=None, max_length=4000)
+    fecha_sesion: datetime | None = None
     piezas: list[JugadaPiezaIn] | None = None
     pasos: list[JugadaPasoIn] | None = None
 
@@ -664,6 +730,7 @@ class JugadaListOut(BaseModel):
     fase: str
     ambito: str = "tactica"
     descripcion: str | None = None
+    fecha_sesion: datetime | None = None
     num_pasos: int = 0
     num_piezas: int = 0
     creado_en: datetime
@@ -676,6 +743,7 @@ class JugadaOut(BaseModel):
     fase: str
     ambito: str = "tactica"
     descripcion: str | None = None
+    fecha_sesion: datetime | None = None
     creado_en: datetime
     actualizado_en: datetime
     piezas: list[JugadaPiezaOut] = []
@@ -684,6 +752,53 @@ class JugadaOut(BaseModel):
 
 class JugadaCopiarIn(BaseModel):
     nombre: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class SesionEntrenamientoCreate(BaseModel):
+    fecha: datetime
+    notas: str | None = Field(default=None, max_length=2000)
+
+
+class SesionEntrenamientoUpdate(BaseModel):
+    fecha: datetime | None = None
+    notas: str | None = Field(default=None, max_length=2000)
+
+
+class SesionEntrenamientoListOut(BaseModel):
+    id_sesion: uuid.UUID
+    fecha: datetime
+    notas: str | None = None
+    presentes: int = 0
+    faltas: int = 0
+    justificadas: int = 0
+    marcadas: int = 0
+
+
+class SesionAsistenciaItemIn(BaseModel):
+    id_jugador: uuid.UUID
+    estado: str = Field(pattern="^(presente|falta|justificada)$")
+
+
+class SesionAsistenciaPutIn(BaseModel):
+    items: list[SesionAsistenciaItemIn] = []
+
+
+class SesionAsistenciaItemOut(BaseModel):
+    id_jugador: uuid.UUID
+    nombre: str
+    apellido: str
+    dorsal: int | None = None
+    estado: str | None = None  # None = sin marcar
+
+
+class SesionEntrenamientoDetalleOut(BaseModel):
+    id_sesion: uuid.UUID
+    fecha: datetime
+    notas: str | None = None
+    items: list[SesionAsistenciaItemOut] = []
+    presentes: int = 0
+    faltas: int = 0
+    justificadas: int = 0
 
 
 # --- Cuotas / Federación ---

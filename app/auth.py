@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from app import models
 from app.config import settings
 from app.database import get_db
-from app.permisos import AREA_LABELS, any_write_cargo, can_write_cargo
+from app.permisos import AREA_LABELS, any_write_cargo, can_read_cargo, can_write_cargo
 
 security = HTTPBearer(auto_error=False)
 
@@ -46,18 +46,59 @@ def create_token(
     *,
     id_miembro: uuid.UUID | None = None,
     permiso: str | None = None,
+    sesion_version: int = 0,
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(id_equipo),
         "iat": now,
         "exp": now + timedelta(hours=settings.auth_token_hours),
+        "sv": int(sesion_version or 0),
     }
     if id_miembro is not None:
         payload["mid"] = str(id_miembro)
     if permiso:
         payload["perm"] = permiso
     return jwt.encode(payload, settings.auth_secret, algorithm="HS256")
+
+
+def create_password_reset_token(*, correo: str, kind: str, subject_id: uuid.UUID) -> str:
+    """kind: 'equipo' | 'miembro'. Token de un solo uso lógico (caduca en 2 h)."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "purpose": "pwd_reset",
+        "kind": kind,
+        "email": correo.strip().lower(),
+        "sid": str(subject_id),
+        "iat": now,
+        "exp": now + timedelta(hours=2),
+    }
+    return jwt.encode(payload, settings.auth_secret, algorithm="HS256")
+
+
+def parse_password_reset_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, settings.auth_secret, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="El enlace ha caducado"
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Enlace inválido"
+        ) from exc
+    if payload.get("purpose") != "pwd_reset":
+        raise HTTPException(status_code=400, detail="Enlace inválido")
+    kind = payload.get("kind")
+    email = (payload.get("email") or "").strip().lower()
+    sid = payload.get("sid")
+    if kind not in ("equipo", "miembro") or not email or not sid:
+        raise HTTPException(status_code=400, detail="Enlace inválido")
+    try:
+        subject_id = uuid.UUID(str(sid))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Enlace inválido") from exc
+    return {"kind": kind, "email": email, "subject_id": subject_id}
 
 
 def parse_token(token: str) -> uuid.UUID:
@@ -77,10 +118,15 @@ def parse_token(token: str) -> uuid.UUID:
 def parse_token_full(token: str) -> dict:
     try:
         payload = jwt.decode(token, settings.auth_secret, algorithms=["HS256"])
+        try:
+            sv = int(payload.get("sv") or 0)
+        except (TypeError, ValueError):
+            sv = 0
         return {
             "id_equipo": uuid.UUID(payload["sub"]),
             "id_miembro": uuid.UUID(payload["mid"]) if payload.get("mid") else None,
             "permiso": payload.get("perm"),
+            "sv": sv,
         }
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
@@ -126,6 +172,19 @@ class AuthSession:
 
     def can_write_area(self, area: str) -> bool:
         return can_write_cargo(self.cargo, area, is_admin=self.is_admin)
+
+    def can_read_area(self, area: str) -> bool:
+        return can_read_cargo(self.cargo, area, is_admin=self.is_admin)
+
+
+def sesion_vigente(data: dict, equipo: models.Equipo, miembro: models.MiembroClub | None) -> bool:
+    """El pase deja de valer cuando cambia la contraseña (sube sesion_version)."""
+    claimed = int(data.get("sv") or 0)
+    if data.get("id_miembro"):
+        actual = int(getattr(miembro, "sesion_version", 0) or 0) if miembro else -1
+    else:
+        actual = int(getattr(equipo, "sesion_version", 0) or 0)
+    return claimed == actual
 
 
 def get_current_session(
@@ -182,6 +241,11 @@ def get_current_session(
                 permiso = "administrador"
         else:
             permiso = "administrador"
+    if not sesion_vigente(data, equipo, miembro if data.get("id_miembro") else None):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesión cerrada. Vuelve a entrar.",
+        )
     return AuthSession(equipo=equipo, miembro=miembro, permiso=permiso)
 
 
@@ -218,6 +282,21 @@ def require_area(area: str):
     return _dep
 
 
+def require_area_read(area: str):
+    """Dependencia: lectura en un área concreta según cargo (admin siempre OK)."""
+
+    def _dep(session: AuthSession = Depends(get_current_session)) -> AuthSession:
+        if not session.can_read_area(area):
+            label = AREA_LABELS.get(area, area)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Tu cargo ({session.cargo}) no puede ver {label}",
+            )
+        return session
+
+    return _dep
+
+
 def get_equipo_write(session: AuthSession = Depends(require_write)) -> models.Equipo:
     return session.equipo
 
@@ -228,6 +307,13 @@ def get_equipo_admin(session: AuthSession = Depends(require_admin)) -> models.Eq
 
 def get_equipo_area(area: str):
     def _dep(session: AuthSession = Depends(require_area(area))) -> models.Equipo:
+        return session.equipo
+
+    return _dep
+
+
+def get_equipo_area_read(area: str):
+    def _dep(session: AuthSession = Depends(require_area_read(area))) -> models.Equipo:
         return session.equipo
 
     return _dep

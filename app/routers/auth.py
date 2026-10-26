@@ -1,19 +1,28 @@
+import logging
 from datetime import date, datetime
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
 from app.auth import (
+    create_password_reset_token,
     create_token,
     get_current_equipo,
     get_current_session,
     hash_password,
     needs_rehash,
+    parse_password_reset_token,
     require_admin,
     verify_password,
 )
+from app.config import settings
 from app.database import get_db
+from app.realtime import publish_club
+from app.mail import send_mail, smtp_configured
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -54,6 +63,11 @@ def _auth_out(
             if (miembro and miembro.permiso == "administrador") or not miembro
             else "miembro"
         ),
+        sesion_version=(
+            int(miembro.sesion_version or 0)
+            if miembro
+            else int(equipo.sesion_version or 0)
+        ),
     )
     sesion = None
     if miembro:
@@ -65,6 +79,118 @@ def _auth_out(
             permiso="administrador" if miembro.permiso == "administrador" else "miembro",
         )
     return schemas.AuthOut(token=token, equipo=equipo, miembro=sesion)
+
+
+# Olvidé la contraseña desactivado: no hay servicio SMTP.
+# No se publica el enlace de reset en la API.
+# @router.post("/password/forgot", response_model=schemas.ForgotPasswordOut)
+def forgot_password(payload: schemas.ForgotPasswordIn, db: Session = Depends(get_db)):
+    """Solicita reset. Siempre responde OK para no filtrar si el correo existe."""
+    correo = payload.correo.strip().lower()
+    msg_ok = (
+        "Si el correo está registrado, recibirás un enlace para restablecer la contraseña."
+    )
+
+    equipo = (
+        db.query(models.Equipo)
+        .filter(models.Equipo.correo == correo)
+        .first()
+    )
+    kind = None
+    subject_id = None
+    if equipo:
+        kind = "equipo"
+        subject_id = equipo.id_equipo
+    else:
+        miembro = (
+            db.query(models.MiembroClub)
+            .filter(
+                models.MiembroClub.correo == correo,
+                models.MiembroClub.estado == "activo",
+                models.MiembroClub.password_hash.isnot(None),
+            )
+            .first()
+        )
+        if miembro:
+            kind = "miembro"
+            subject_id = miembro.id_miembro
+
+    reset_url = None
+    if kind and subject_id:
+        token = create_password_reset_token(
+            correo=correo, kind=kind, subject_id=subject_id
+        )
+        base = (settings.frontend_url or "http://localhost:5173").rstrip("/")
+        reset_url = f"{base}/restablecer?token={quote(token, safe='')}"
+        body = (
+            "Has solicitado restablecer tu contraseña en SIETE.\n\n"
+            f"Abre este enlace (caduca en 2 horas):\n{reset_url}\n\n"
+            "Si no fuiste tú, ignora este mensaje."
+        )
+        try:
+            sent = send_mail(
+                to=correo,
+                subject="SIETE · Restablecer contraseña",
+                body=body,
+            )
+            if not sent:
+                logger.info("Reset password (sin SMTP) para %s: %s", correo, reset_url)
+        except Exception:
+            logger.exception("No se pudo enviar el correo de reset a %s", correo)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo enviar el correo. Inténtalo más tarde.",
+            ) from None
+
+    # En desarrollo sin SMTP devolvemos la URL para poder probar el flujo
+    show_url = (
+        reset_url
+        if reset_url and (settings.app_env.lower() in ("development", "dev") or not smtp_configured())
+        else None
+    )
+    return schemas.ForgotPasswordOut(ok=True, message=msg_ok, reset_url=show_url)
+
+
+# @router.post("/password/reset", response_model=schemas.ForgotPasswordOut)
+def reset_password(payload: schemas.ResetPasswordIn, db: Session = Depends(get_db)):
+    data = parse_password_reset_token(payload.token)
+    correo = data["email"]
+    kind = data["kind"]
+    subject_id = data["subject_id"]
+    new_hash = hash_password(payload.password)
+
+    if kind == "equipo":
+        equipo = (
+            db.query(models.Equipo)
+            .filter(
+                models.Equipo.id_equipo == subject_id,
+                models.Equipo.correo == correo,
+            )
+            .first()
+        )
+        if not equipo:
+            raise HTTPException(status_code=400, detail="Enlace inválido o ya usado")
+        equipo.password_hash = new_hash
+    else:
+        miembro = (
+            db.query(models.MiembroClub)
+            .filter(
+                models.MiembroClub.id_miembro == subject_id,
+                models.MiembroClub.correo == correo,
+                models.MiembroClub.estado == "activo",
+            )
+            .first()
+        )
+        if not miembro:
+            raise HTTPException(status_code=400, detail="Enlace inválido o ya usado")
+        miembro.password_hash = new_hash
+
+    db.commit()
+    return schemas.ForgotPasswordOut(
+        ok=True,
+        message="Contraseña actualizada. Ya puedes iniciar sesión.",
+        reset_url=None,
+    )
 
 
 @router.post("/login", response_model=schemas.AuthOut)
@@ -309,18 +435,32 @@ def cambiar_password(
     session=Depends(get_current_session),
     db: Session = Depends(get_db),
 ):
-    if session.miembro:
-        if not session.miembro.password_hash or not verify_password(
-            payload.password_actual, session.miembro.password_hash
-        ):
+    nuevo = hash_password(payload.password_nueva)
+    miembro = session.miembro
+    equipo = session.equipo
+    if miembro and miembro.password_hash:
+        if not verify_password(payload.password_actual, miembro.password_hash):
             raise HTTPException(status_code=400, detail="Contraseña actual incorrecta")
-        session.miembro.password_hash = hash_password(payload.password_nueva)
-        db.commit()
+        miembro.password_hash = nuevo
+        miembro.sesion_version = int(miembro.sesion_version or 0) + 1
+        if (miembro.correo or "").lower() == (equipo.correo or "").lower():
+            equipo.password_hash = nuevo
+            equipo.sesion_version = int(equipo.sesion_version or 0) + 1
     else:
-        if not verify_password(payload.password_actual, session.equipo.password_hash):
+        if not verify_password(payload.password_actual, equipo.password_hash):
             raise HTTPException(status_code=400, detail="Contraseña actual incorrecta")
-        session.equipo.password_hash = hash_password(payload.password_nueva)
-        db.commit()
+        equipo.password_hash = nuevo
+        equipo.sesion_version = int(equipo.sesion_version or 0) + 1
+        if miembro:
+            miembro.sesion_version = int(miembro.sesion_version or 0) + 1
+    db.commit()
+    publish_club(
+        equipo.id_equipo,
+        {
+            "type": "sesion.revocada",
+            "id_miembro": str(miembro.id_miembro) if miembro else None,
+        },
+    )
     return sesion(session)
 
 
@@ -350,6 +490,9 @@ def actualizar_cuenta(
         ):
             raise HTTPException(status_code=400, detail="Contraseña actual incorrecta")
         equipo.password_hash = hash_password(payload.password_nueva)
+        equipo.sesion_version = int(equipo.sesion_version or 0) + 1
+        if session.miembro:
+            session.miembro.sesion_version = int(session.miembro.sesion_version or 0) + 1
 
     if payload.entrenador_nombre is not None and equipo.datos:
         equipo.datos.entrenador_nombre = payload.entrenador_nombre.strip() or None
@@ -358,6 +501,14 @@ def actualizar_cuenta(
         equipo.datos.nombre_corto = payload.nombre_display.strip() or equipo.datos.nombre_corto
 
     db.commit()
+    if payload.password_nueva:
+        publish_club(
+            equipo.id_equipo,
+            {
+                "type": "sesion.revocada",
+                "id_miembro": str(session.miembro.id_miembro) if session.miembro else None,
+            },
+        )
     return _equipo_out(db, equipo.id_equipo)
 
 

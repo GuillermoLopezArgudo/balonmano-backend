@@ -37,7 +37,6 @@ _WRITE = {
         "informes",
     },
     "Preparador físico": {
-        "plantilla",  # fichas / estado físico
         "fisico",
         "analitica",
         "informes",
@@ -80,7 +79,6 @@ _READ = {
         "plantilla",
         "partidos",
         "convocatoria",
-        "jugadas",
         "fisico",
         "analitica",
         "informes",
@@ -99,7 +97,9 @@ _READ = {
     "Staff": {
         "plantilla",
         "partidos",
+        "directo",
         "convocatoria",
+        "jugadas",
         "fisico",
         "analitica",
         "informes",

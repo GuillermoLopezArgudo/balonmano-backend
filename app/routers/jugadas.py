@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo, get_current_session, AuthSession
+from app.auth import get_current_session, AuthSession
 from app.database import get_db
 from app.permisos import AREA_LABELS
 
@@ -46,6 +46,7 @@ def _out(j: models.Jugada) -> schemas.JugadaOut:
         fase=j.fase,
         ambito=getattr(j, "ambito", None) or "tactica",
         descripcion=j.descripcion,
+        fecha_sesion=getattr(j, "fecha_sesion", None),
         creado_en=j.creado_en,
         actualizado_en=j.actualizado_en,
         piezas=[
@@ -99,6 +100,7 @@ def _list_out(j: models.Jugada) -> schemas.JugadaListOut:
         fase=j.fase,
         ambito=getattr(j, "ambito", None) or "tactica",
         descripcion=j.descripcion,
+        fecha_sesion=getattr(j, "fecha_sesion", None),
         num_pasos=len(j.pasos or []),
         num_piezas=len(j.piezas or []),
         creado_en=j.creado_en,
@@ -248,14 +250,26 @@ def _aplicar_contenido(
         jugada.pasos.append(paso)
 
 
+def _assert_read(session: AuthSession, ambito: str) -> None:
+    area = "fisico" if ambito == "fisico" else "jugadas"
+    if not session.can_read_area(area):
+        label = AREA_LABELS.get(area, area)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Tu cargo ({session.cargo}) no puede ver {label}",
+        )
+
+
 @router.get("/", response_model=list[schemas.JugadaListOut])
 def listar(
     fase: str | None = None,
     ambito: str | None = None,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    session: AuthSession = Depends(get_current_session),
 ):
     ambito_f = ambito if ambito in ("tactica", "fisico") else "tactica"
+    _assert_read(session, ambito_f)
+    equipo = session.equipo
     q = (
         db.query(models.Jugada)
         .options(joinedload(models.Jugada.pasos), joinedload(models.Jugada.piezas))
@@ -274,11 +288,12 @@ def listar(
 def obtener(
     id_jugada: str,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    session: AuthSession = Depends(get_current_session),
 ):
-    j = _load(db, id_jugada, equipo.id_equipo)
+    j = _load(db, id_jugada, session.equipo.id_equipo)
     if not j:
         raise HTTPException(status_code=404, detail="Jugada no encontrada")
+    _assert_read(session, j.ambito or "tactica")
     return _out(j)
 
 
@@ -309,6 +324,7 @@ def crear(
         fase=fase,
         ambito=ambito,
         descripcion=(payload.descripcion or "").strip() or None,
+        fecha_sesion=payload.fecha_sesion,
     )
     db.add(jugada)
     db.flush()
@@ -343,6 +359,8 @@ def actualizar(
         jugada.ambito = payload.ambito
     if payload.descripcion is not None:
         jugada.descripcion = payload.descripcion.strip() or None
+    if "fecha_sesion" in payload.model_dump(exclude_unset=True):
+        jugada.fecha_sesion = payload.fecha_sesion
 
     if payload.piezas is not None and payload.pasos is not None:
         _aplicar_contenido(db, jugada, payload.piezas, payload.pasos)
@@ -417,6 +435,7 @@ def copiar(
         fase=origen.fase,
         ambito=ambito,
         descripcion=origen.descripcion,
+        fecha_sesion=getattr(origen, "fecha_sesion", None),
     )
     db.add(nueva)
     db.flush()

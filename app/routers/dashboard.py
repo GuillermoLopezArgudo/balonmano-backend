@@ -77,6 +77,8 @@ def resumen(
 
     goles_totales = 0
     for p in partidos:
+        if (p.estado or "") != "jugado":
+            continue
         if p.id_rival and p.id_equipo == id_eq:
             goles_totales += (p.goles_local if p.es_local else p.goles_visitante) or 0
         elif p.id_equipo_local == id_eq:
@@ -136,9 +138,34 @@ def resumen(
     from datetime import datetime, timezone
 
     ahora = datetime.now(timezone.utc)
-    jugados = [p for p in partidos if p.fecha <= ahora]
-    proximos = [p for p in partidos if p.fecha > ahora]
+    # Solo cuentan partidos cerrados a mano como jugados (no por fecha).
+    jugados = [p for p in partidos if (p.estado or "") == "jugado"]
+    proximos = [
+        p
+        for p in partidos
+        if (p.estado or "programado") == "programado" and p.fecha > ahora
+    ]
     proximos.sort(key=lambda x: x.fecha)
+
+    gk_stats = (
+        db.query(
+            func.coalesce(func.sum(models.EstadisticaPortero.paradas), 0),
+            func.coalesce(func.sum(models.EstadisticaPortero.lanzamientos_recibidos), 0),
+            func.coalesce(func.sum(models.EstadisticaPortero.goles_recibidos), 0),
+        )
+        .join(
+            models.JugadorEquipo,
+            models.JugadorEquipo.id_jugador == models.EstadisticaPortero.id_jugador,
+        )
+        .filter(models.JugadorEquipo.id_equipo == id_eq)
+        .one()
+    )
+    paradas = int(gk_stats[0] or 0)
+    recibidos = int(gk_stats[1] or 0)
+    goles_recibidos = int(gk_stats[2] or 0)
+    if not recibidos and (paradas or goles_recibidos):
+        recibidos = paradas + goles_recibidos
+    efectividad_paradas = round((paradas / recibidos) * 100, 1) if recibidos else 0.0
 
     return schemas.DashboardOut(
         equipo_nombre=equipo.datos.nombre if equipo.datos else equipo.correo,
@@ -149,6 +176,10 @@ def resumen(
         efectividad_por_posicion=efectividad_por_posicion,
         ultimos_partidos=[_partido_out(p) for p in jugados[:5]],
         proximos_partidos=[_partido_out(p) for p in proximos[:5]],
+        paradas=paradas,
+        lanzamientos_recibidos=recibidos,
+        goles_recibidos=goles_recibidos,
+        efectividad_paradas=efectividad_paradas,
     )
 
 
@@ -185,6 +216,9 @@ def jugador_detalle(
             func.coalesce(func.sum(models.EstadisticaJugador.minutos_jugados), 0),
             func.count(models.EstadisticaJugador.id_estadistica),
             func.coalesce(func.sum(models.EstadisticaJugador.perdidas), 0),
+            func.coalesce(func.sum(models.EstadisticaJugador.recuperaciones), 0),
+            func.coalesce(func.sum(models.EstadisticaJugador.faltas_cometidas), 0),
+            func.coalesce(func.sum(models.EstadisticaJugador.faltas_recibidas), 0),
             func.coalesce(func.sum(models.EstadisticaJugador.amarillas), 0),
             func.coalesce(func.sum(models.EstadisticaJugador.exclusiones_2min), 0),
             func.coalesce(func.sum(models.EstadisticaJugador.rojas), 0),
@@ -200,6 +234,9 @@ def jugador_detalle(
         minutos,
         partidos_campo,
         perdidas,
+        recuperaciones,
+        faltas_cometidas,
+        faltas_recibidas,
         amarillas,
         exclusiones_2min,
         rojas,
@@ -365,6 +402,28 @@ def jugador_detalle(
                 }
             )
 
+    asis_rows = (
+        db.query(models.SesionAsistencia.estado, func.count())
+        .join(
+            models.SesionEntrenamiento,
+            models.SesionEntrenamiento.id_sesion == models.SesionAsistencia.id_sesion,
+        )
+        .filter(
+            models.SesionAsistencia.id_jugador == id_jugador,
+            models.SesionEntrenamiento.id_equipo == equipo.id_equipo,
+        )
+        .group_by(models.SesionAsistencia.estado)
+        .all()
+    )
+    asis_map = {estado: int(n) for estado, n in asis_rows}
+    asis_presentes = asis_map.get("presente", 0)
+    asis_faltas = asis_map.get("falta", 0)
+    asis_just = asis_map.get("justificada", 0)
+    asis_sesiones = asis_presentes + asis_faltas + asis_just
+    # % = presentes / (presentes + faltas); justificada no penaliza
+    asis_denom = asis_presentes + asis_faltas
+    asis_pct = round((asis_presentes / asis_denom) * 100, 1) if asis_denom else 0.0
+
     return schemas.JugadorDetalleOut(
         jugador=_jugador_out(jugador),
         goles=goles,
@@ -374,6 +433,9 @@ def jugador_detalle(
         minutos_jugados=minutos,
         partidos=partidos,
         perdidas=perdidas,
+        recuperaciones=recuperaciones,
+        faltas_cometidas=faltas_cometidas,
+        faltas_recibidas=faltas_recibidas,
         pct_perdidas=pct_perdidas,
         amarillas=amarillas,
         exclusiones_2min=exclusiones_2min,
@@ -384,6 +446,13 @@ def jugador_detalle(
         lanzamientos_recibidos=recibidos,
         goles_recibidos=goles_recibidos,
         efectividad_paradas=efectividad_paradas,
+        asistencia_entrenamientos=schemas.JugadorAsistenciaResumen(
+            sesiones=asis_sesiones,
+            presentes=asis_presentes,
+            faltas=asis_faltas,
+            justificadas=asis_just,
+            pct_asistencia=asis_pct,
+        ),
         goles_por_partido=[
             {"fecha": str(f.date()) if hasattr(f, "date") else str(f), "goles": int(g)}
             for f, g, _ in por_partido

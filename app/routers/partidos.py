@@ -48,7 +48,6 @@ def _partido_out(partido: models.Partido) -> schemas.PartidoOut:
         jornada=partido.jornada,
         pabellon=partido.pabellon,
         competicion=partido.competicion,
-        img_portada=getattr(partido, "img_portada", None),
         goles_local=partido.goles_local,
         goles_visitante=partido.goles_visitante,
         estado=getattr(partido, "estado", None) or "programado",
@@ -116,6 +115,20 @@ def listar(
     return [_partido_out(p) for p in partidos]
 
 
+@router.get("/{id_partido}", response_model=schemas.PartidoOut)
+def obtener(
+    id_partido: str,
+    db: Session = Depends(get_db),
+    equipo: models.Equipo = Depends(get_current_equipo),
+):
+    if not partido_del_equipo(db, id_partido, equipo.id_equipo):
+        raise HTTPException(status_code=404, detail="Partido no encontrado")
+    partido = _load(db, id_partido)
+    if not partido:
+        raise HTTPException(status_code=404, detail="Partido no encontrado")
+    return _partido_out(partido)
+
+
 @router.post("/", response_model=schemas.PartidoOut, status_code=status.HTTP_201_CREATED)
 def crear(
     payload: schemas.PartidoCreate,
@@ -164,7 +177,6 @@ def crear(
         jornada=payload.jornada,
         pabellon=payload.pabellon,
         competicion=payload.competicion,
-        img_portada=payload.img_portada,
         goles_local=payload.goles_local,
         goles_visitante=payload.goles_visitante,
         estado=payload.estado or "programado",
@@ -187,7 +199,29 @@ def actualizar(
     _assert_editable(partido)
 
     data = payload.model_dump(exclude_unset=True)
+
+    if "id_rival" in data and data["id_rival"] is not None:
+        rival = (
+            db.query(models.Rival)
+            .filter(
+                models.Rival.id_rival == data["id_rival"],
+                models.Rival.id_equipo == equipo.id_equipo,
+            )
+            .first()
+        )
+        if not rival:
+            raise HTTPException(status_code=404, detail="Rival no encontrado")
+        partido.id_rival = rival.id_rival
+
+    if "es_local" in data and data["es_local"] is not None:
+        es_local = bool(data["es_local"])
+        partido.es_local = es_local
+        partido.id_equipo_local = equipo.id_equipo if es_local else None
+        partido.id_equipo_visitante = equipo.id_equipo if not es_local else None
+
     for key, value in data.items():
+        if key in ("id_rival", "es_local"):
+            continue
         setattr(partido, key, value)
     db.commit()
     return _partido_out(_load(db, id_partido))

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
-from app.auth import get_current_equipo, get_equipo_area
+from app.auth import AuthSession, get_current_equipo, get_current_session, get_equipo_area
 from app.database import get_db
 
 router = APIRouter(prefix="/jugadores", tags=["jugadores"])
@@ -32,6 +32,7 @@ def _jugador_out(jugador: models.Jugador) -> schemas.JugadorOut:
         posiciones=[jp.posicion.nombre for jp in jugador.posiciones if jp.posicion],
         id_posicion=pos.id_posicion if pos else None,
         activo=bool(activo and activo.fecha_baja is None),
+        disponibilidad=getattr(activo, "disponibilidad", None) or "disponible",
     )
 
 
@@ -109,6 +110,7 @@ def crear(
             dorsal=payload.dorsal,
             fecha_alta=alta,
             fecha_baja=None if payload.activo else alta,
+            disponibilidad=payload.disponibilidad or "disponible",
         )
     )
     if payload.id_posicion:
@@ -142,16 +144,30 @@ def actualizar(
     id_jugador: str,
     payload: schemas.JugadorUpdate,
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_equipo_area("plantilla")),
+    session: AuthSession = Depends(get_current_session),
 ):
+    puede_plantilla = session.can_write_area("plantilla")
+    puede_fisico = session.can_write_area("fisico")
+    if not puede_plantilla and not puede_fisico:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Tu cargo ({session.cargo}) no puede modificar plantilla",
+        )
+
     jugador = _load_jugador(db, id_jugador)
     if not jugador:
         raise HTTPException(status_code=404, detail="Jugador no encontrado")
-    vinculo = _vinculo_equipo(db, id_jugador, equipo.id_equipo)
+    vinculo = _vinculo_equipo(db, id_jugador, session.equipo.id_equipo)
     if not vinculo:
         raise HTTPException(status_code=403, detail="No pertenece a tu equipo")
 
     data = payload.model_dump(exclude_unset=True)
+    if not puede_plantilla:
+        if set(data) - {"disponibilidad"} or "disponibilidad" not in data:
+            raise HTTPException(
+                status_code=403,
+                detail="Tu cargo solo puede cambiar la disponibilidad de la jugadora",
+            )
     if "id_posicion" in data and data["id_posicion"] is not None:
         if not db.get(models.Posicion, data["id_posicion"]):
             raise HTTPException(status_code=404, detail="Posición no encontrada")
@@ -170,6 +186,9 @@ def actualizar(
                 vinculo.fecha_alta = date.today()
         else:
             vinculo.fecha_baja = date.today()
+
+    if "disponibilidad" in data and data["disponibilidad"] is not None:
+        vinculo.disponibilidad = data["disponibilidad"]
 
     if "id_posicion" in data:
         db.query(models.JugadorPosicion).filter(

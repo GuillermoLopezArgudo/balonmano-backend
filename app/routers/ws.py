@@ -6,7 +6,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session, joinedload
 
 from app import models
-from app.auth import parse_token_full
+from app.auth import parse_token_full, sesion_vigente
 from app.database import SessionLocal
 from app.realtime import club_hub
 
@@ -37,8 +37,10 @@ def _equipo_from_token(token: str, db: Session) -> models.Equipo | None:
             )
             .first()
         )
-        if not miembro:
+        if not miembro or not sesion_vigente(data, equipo, miembro):
             return None
+    elif not sesion_vigente(data, equipo, None):
+        return None
     return equipo
 
 

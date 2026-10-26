@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     # True = un ALTER fallido en ensure_schema aborta el arranque.
     # En production se fuerza a True salvo que pongas STRICT_SCHEMA=false.
     strict_schema: bool | None = None
+    # URL pública del frontend (enlaces de reset de contraseña)
+    frontend_url: str = "http://localhost:5173"
+    # SMTP opcional (si falta, el reset solo registra el enlace en logs / respuesta en dev)
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_tls: bool = True
 
 
 settings = Settings()

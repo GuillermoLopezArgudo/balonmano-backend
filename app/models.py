@@ -25,6 +25,7 @@ class Equipo(Base):
     id_equipo: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     correo: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    sesion_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     datos: Mapped["DatosEquipo | None"] = relationship(
         back_populates="equipo", uselist=False, cascade="all, delete-orphan"
@@ -57,6 +58,9 @@ class Equipo(Base):
         back_populates="equipo", cascade="all, delete-orphan"
     )
     preparaciones_fisicas: Mapped[list["PreparacionFisica"]] = relationship(
+        back_populates="equipo", cascade="all, delete-orphan"
+    )
+    sesiones_entrenamiento: Mapped[list["SesionEntrenamiento"]] = relationship(
         back_populates="equipo", cascade="all, delete-orphan"
     )
     cuota_configs: Mapped[list["CuotaConfig"]] = relationship(
@@ -219,6 +223,9 @@ class JugadorEquipo(Base):
     dorsal: Mapped[int] = mapped_column(Integer, nullable=False)
     fecha_alta: Mapped[date | None] = mapped_column(Date)
     fecha_baja: Mapped[date | None] = mapped_column(Date)
+    disponibilidad: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="disponible"
+    )
 
     jugador: Mapped["Jugador"] = relationship(back_populates="equipos")
     equipo: Mapped["Equipo"] = relationship(back_populates="jugadores_equipo")
@@ -251,7 +258,7 @@ class Partido(Base):
     __tablename__ = "partido"
     __table_args__ = (
         CheckConstraint(
-            "estado IN ('programado', 'aplazado', 'jugado', 'no_disputado')",
+            "estado IN ('programado', 'aplazado', 'jugado', 'sin_resultado')",
             name="ck_partido_estado",
         ),
     )
@@ -283,6 +290,9 @@ class Partido(Base):
     goles_local: Mapped[int] = mapped_column(Integer, default=0)
     goles_visitante: Mapped[int] = mapped_column(Integer, default=0)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="programado")
+    convocatoria_estado: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="borrador"
+    )
 
     equipo_owner: Mapped["Equipo | None"] = relationship(
         foreign_keys=[id_equipo],
@@ -537,6 +547,7 @@ class MiembroClub(Base):
     permiso: Mapped[str] = mapped_column(String(20), nullable=False, default="miembro")
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activo")
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sesion_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     invite_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     invite_expires: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -565,6 +576,7 @@ class Jugada(Base):
     fase: Mapped[str] = mapped_column(String(20), nullable=False, default="ataque")
     ambito: Mapped[str] = mapped_column(String(20), nullable=False, default="tactica")
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fecha_sesion: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     actualizado_en: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
@@ -577,6 +589,48 @@ class Jugada(Base):
     pasos: Mapped[list["JugadaPaso"]] = relationship(
         back_populates="jugada", cascade="all, delete-orphan", order_by="JugadaPaso.orden"
     )
+
+
+class SesionEntrenamiento(Base):
+    """Sesión real de entrenamiento (pase de lista), independiente de las plantillas."""
+
+    __tablename__ = "sesion_entrenamiento"
+
+    id_sesion: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id_equipo: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("equipo.id_equipo", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    notas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    equipo: Mapped["Equipo"] = relationship(back_populates="sesiones_entrenamiento")
+    asistencias: Mapped[list["SesionAsistencia"]] = relationship(
+        back_populates="sesion", cascade="all, delete-orphan"
+    )
+
+
+class SesionAsistencia(Base):
+    """Marcaje de asistencia de una jugadora a una sesión."""
+
+    __tablename__ = "sesion_asistencia"
+    __table_args__ = (
+        CheckConstraint(
+            "estado IN ('presente', 'falta', 'justificada')",
+            name="ck_sesion_asistencia_estado",
+        ),
+    )
+
+    id_sesion: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("sesion_entrenamiento.id_sesion", ondelete="CASCADE"), primary_key=True
+    )
+    id_jugador: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jugador.id_jugador", ondelete="CASCADE"), primary_key=True
+    )
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="presente")
+
+    sesion: Mapped["SesionEntrenamiento"] = relationship(back_populates="asistencias")
+    jugador: Mapped["Jugador"] = relationship()
 
 
 class JugadaPieza(Base):

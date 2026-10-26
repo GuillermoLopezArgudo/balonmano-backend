@@ -79,10 +79,13 @@ def obtener(
     partido = _partido_del_equipo(db, id_partido, equipo.id_equipo)
     if not partido:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
+    estado = getattr(partido, "convocatoria_estado", None) or "borrador"
+    if estado not in ("borrador", "guardada"):
+        estado = "borrador"
     return schemas.ConvocatoriaOut(
         id_partido=partido.id_partido,
         items=_items_out(db, partido.id_partido, equipo.id_equipo),
-        confirmada=False,
+        estado=estado,
     )
 
 
@@ -139,6 +142,14 @@ def guardar(
                 status_code=400,
                 detail="Hay jugadores que no pertenecen a tu equipo",
             )
+        if vinculo.disponibilidad in ("lesion", "sancion"):
+            j = db.get(models.Jugador, item.id_jugador)
+            nombre = f"{j.nombre} {j.apellido}".strip() if j else "Una jugadora"
+            motivo = "sancionada" if vinculo.disponibilidad == "sancion" else "lesionada"
+            raise HTTPException(
+                status_code=400,
+                detail=f"{nombre} está {motivo} y no se puede convocar.",
+            )
 
         if id_temporada and not federacion_pagada(
             db, equipo.id_equipo, id_temporada, item.id_jugador
@@ -193,10 +204,12 @@ def guardar(
                 zona_defensa=zd,
             )
         )
+    estado = payload.estado if payload.estado in ("borrador", "guardada") else "borrador"
+    partido.convocatoria_estado = estado
     db.commit()
 
     return schemas.ConvocatoriaOut(
         id_partido=partido.id_partido,
         items=_items_out(db, partido.id_partido, equipo.id_equipo),
-        confirmada=payload.confirmada,
+        estado=estado,
     )

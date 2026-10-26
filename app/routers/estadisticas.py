@@ -20,7 +20,13 @@ def _validar_contexto(tipo: models.TipoAccion, contexto: str | None) -> str | No
     """Lanzamiento exige cómo se llega; pérdida exige la causa. El resto no lleva contexto."""
     n = (tipo.nombre or "").lower()
     es_perdida = "perdida" in n or "pérdida" in n
-    es_tiro = n == "gol" or "lanzamiento" in n or "parada" in n or ("gol" in n and "recibid" in n)
+    es_tiro = (
+        n == "gol"
+        or "lanzamiento" in n
+        or "parada" in n
+        or ("gol" in n and "recibid" in n)
+        or n in ("poste", "fuera")
+    )
     if es_perdida:
         if contexto not in schemas.CONTEXTOS_PERDIDA:
             raise HTTPException(status_code=400, detail="Elige el tipo de pérdida")
@@ -442,12 +448,14 @@ def _aplicar_efecto_accion(
         elif es_tiro:
             stats.lanzamientos = _add(stats.lanzamientos, signo)
             stats.lanzamientos_fallados = _add(stats.lanzamientos_fallados, signo)
-        elif "asistencia" in nombre:
-            stats.asistencias = _add(stats.asistencias, signo)
         elif "pérdida" in nombre or "perdida" in nombre:
             stats.perdidas = _add(stats.perdidas, signo)
         elif "recuperación" in nombre or "recuperacion" in nombre:
             stats.recuperaciones = _add(stats.recuperaciones, signo)
+        elif "falta" in nombre and "recibid" in nombre:
+            stats.faltas_recibidas = _add(stats.faltas_recibidas, signo)
+        elif "falta" in nombre:
+            stats.faltas_cometidas = _add(stats.faltas_cometidas, signo)
         elif "exclusión" in nombre or "exclusion" in nombre:
             stats.exclusiones_2min = _add(stats.exclusiones_2min, signo)
         elif "amarilla" in nombre:
@@ -726,6 +734,15 @@ def resumen_jugadores(
             func.coalesce(func.sum(models.EstadisticaJugador.asistencias), 0).label("asistencias"),
             func.coalesce(func.sum(models.EstadisticaJugador.lanzamientos), 0).label("lanzamientos"),
             func.coalesce(func.sum(models.EstadisticaJugador.perdidas), 0).label("perdidas"),
+            func.coalesce(func.sum(models.EstadisticaJugador.recuperaciones), 0).label(
+                "recuperaciones"
+            ),
+            func.coalesce(func.sum(models.EstadisticaJugador.faltas_cometidas), 0).label(
+                "faltas_cometidas"
+            ),
+            func.coalesce(func.sum(models.EstadisticaJugador.faltas_recibidas), 0).label(
+                "faltas_recibidas"
+            ),
             func.coalesce(func.sum(models.EstadisticaJugador.amarillas), 0).label("amarillas"),
             func.coalesce(func.sum(models.EstadisticaJugador.exclusiones_2min), 0).label(
                 "exclusiones_2min"

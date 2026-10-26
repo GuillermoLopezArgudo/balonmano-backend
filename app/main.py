@@ -4,7 +4,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app import models  # noqa: F401 — registra modelos en metadata
@@ -12,6 +11,7 @@ from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.routers.auth import router as auth_router
 from app.routers.alineaciones import router as alineaciones_router
+from app.routers.asistencias import router as asistencias_router
 from app.routers.jugadas import router as jugadas_router
 from app.routers.preparaciones import router as preparaciones_router
 from app.routers.catalogos import router as catalogos_router
@@ -70,6 +70,42 @@ def ensure_schema() -> None:
         "ALTER TABLE jugada_paso ADD COLUMN IF NOT EXISTS id_pieza_balon UUID",
         "ALTER TABLE jugada_flecha ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'movimiento'",
         "ALTER TABLE jugada ADD COLUMN IF NOT EXISTS ambito VARCHAR(20) DEFAULT 'tactica'",
+        "ALTER TABLE jugada ADD COLUMN IF NOT EXISTS fecha_sesion TIMESTAMPTZ",
+        """
+        CREATE TABLE IF NOT EXISTS sesion_entrenamiento (
+            id_sesion UUID PRIMARY KEY,
+            id_equipo UUID NOT NULL REFERENCES equipo(id_equipo) ON DELETE CASCADE,
+            fecha TIMESTAMPTZ NOT NULL,
+            notas TEXT,
+            creado_en TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_sesion_entrenamiento_id_equipo ON sesion_entrenamiento (id_equipo)",
+        """
+        CREATE TABLE IF NOT EXISTS sesion_asistencia (
+            id_sesion UUID NOT NULL REFERENCES sesion_entrenamiento(id_sesion) ON DELETE CASCADE,
+            id_jugador UUID NOT NULL REFERENCES jugador(id_jugador) ON DELETE CASCADE,
+            estado VARCHAR(20) NOT NULL DEFAULT 'presente',
+            PRIMARY KEY (id_sesion, id_jugador),
+            CONSTRAINT ck_sesion_asistencia_estado
+              CHECK (estado IN ('presente', 'falta', 'justificada'))
+        )
+        """,
+        "ALTER TABLE jugador_equipo ADD COLUMN IF NOT EXISTS disponibilidad VARCHAR(20) DEFAULT 'disponible'",
+        """
+        UPDATE jugador_equipo SET disponibilidad = 'disponible'
+        WHERE disponibilidad IS NULL OR disponibilidad = ''
+           OR disponibilidad NOT IN ('disponible', 'dudosa', 'lesion', 'sancion')
+        """,
+        """
+        DO $$ BEGIN
+          ALTER TABLE jugador_equipo DROP CONSTRAINT IF EXISTS ck_jugador_disponibilidad;
+          ALTER TABLE jugador_equipo
+            ADD CONSTRAINT ck_jugador_disponibilidad
+            CHECK (disponibilidad IN ('disponible', 'dudosa', 'lesion', 'sancion'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+        """,
         """
         UPDATE jugada SET ambito = 'tactica'
         WHERE ambito IS NULL OR ambito = ''
@@ -118,6 +154,7 @@ def ensure_schema() -> None:
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS competicion VARCHAR(100)",
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS img_portada VARCHAR(255)",
         "ALTER TABLE partido ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'programado'",
+        "ALTER TABLE partido ADD COLUMN IF NOT EXISTS convocatoria_estado VARCHAR(20) DEFAULT 'borrador'",
         "ALTER TABLE temporada ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'activa'",
         "ALTER TABLE temporada ADD COLUMN IF NOT EXISTS cerrada_en TIMESTAMP",
         "ALTER TABLE datos_equipo ADD COLUMN IF NOT EXISTS entrenador_nombre VARCHAR(150)",
@@ -173,6 +210,16 @@ def ensure_schema() -> None:
         "ALTER TABLE jugador ALTER COLUMN img_foto TYPE VARCHAR(255)",
         "ALTER TABLE datos_equipo ALTER COLUMN img_escudo TYPE VARCHAR(255)",
         "UPDATE partido SET estado = 'programado' WHERE estado IS NULL",
+        "UPDATE partido SET estado = 'jugado' WHERE estado = 'no_disputado'",
+        """
+        DO $$ BEGIN
+          ALTER TABLE partido DROP CONSTRAINT IF EXISTS ck_partido_estado;
+          ALTER TABLE partido
+            ADD CONSTRAINT ck_partido_estado
+            CHECK (estado IN ('programado', 'aplazado', 'jugado', 'sin_resultado'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+        """,
         "UPDATE temporada SET estado = 'activa' WHERE estado IS NULL",
         """
         UPDATE temporada t SET id_equipo = et.id_equipo
@@ -193,6 +240,8 @@ def ensure_schema() -> None:
         WHERE es_local IS NULL AND id_equipo IS NOT NULL
           AND id_equipo_visitante = id_equipo
         """,
+        "ALTER TABLE equipo ADD COLUMN IF NOT EXISTS sesion_version INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE miembro_club ADD COLUMN IF NOT EXISTS sesion_version INTEGER NOT NULL DEFAULT 0",
     ]
     failures = 0
     for stmt in stmts:
@@ -309,6 +358,7 @@ app.include_router(convocatorias_router, prefix="/api")
 app.include_router(cuotas_router, prefix="/api")
 app.include_router(alineaciones_router, prefix="/api")
 app.include_router(jugadas_router, prefix="/api")
+app.include_router(asistencias_router, prefix="/api")
 app.include_router(preparaciones_router, prefix="/api")
 app.include_router(miembros_router, prefix="/api")
 app.include_router(estadisticas_router, prefix="/api")
@@ -319,9 +369,9 @@ from app.routers.ws import club_ws as club_ws_endpoint
 
 app.add_api_websocket_route("/api/ws", club_ws_endpoint)
 
+# Las fotos no se publican. Se leen con sesión en GET /api/uploads/file.
 uploads_path = Path(settings.uploads_dir).resolve()
 uploads_path.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
 
 
 @app.get("/api/health")

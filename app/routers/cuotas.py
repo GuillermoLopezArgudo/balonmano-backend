@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.auth import get_current_equipo, get_equipo_area
+from app.auth import get_equipo_area, get_equipo_area_read
 from app.database import get_db
 
 router = APIRouter(prefix="/cuotas", tags=["cuotas"])
@@ -208,7 +208,7 @@ def federacion_pagada(
 def obtener_cuotas(
     id_temporada: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area_read("cuotas")),
 ):
     temporada = _resolve_temporada(db, equipo, id_temporada)
     out = _build_out(db, equipo, temporada)
@@ -422,9 +422,9 @@ def bulk_cuotas(
 def federacion_estados(
     id_temporada: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    equipo: models.Equipo = Depends(get_current_equipo),
+    equipo: models.Equipo = Depends(get_equipo_area_read("cuotas")),
 ):
-    """Mapa id_jugador → federacion_pagada (para convocatoria)."""
+    """Mapa id_jugador → federacion_pagada. Solo quien puede ver cuotas."""
     temporada = _resolve_temporada(db, equipo, id_temporada)
     rows = (
         db.query(models.FederacionPago)
