@@ -1,12 +1,16 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
 from app.auth import get_current_session, AuthSession
 from app.database import get_db
 from app.permisos import AREA_LABELS
+
+logger = logging.getLogger("siete.jugadas")
 
 router = APIRouter(prefix="/jugadas", tags=["jugadas"])
 
@@ -318,18 +322,31 @@ def crear(
     if not piezas or not pasos:
         piezas, pasos = _default_contenido(fase)
 
-    jugada = models.Jugada(
-        id_equipo=equipo.id_equipo,
-        nombre=payload.nombre.strip(),
-        fase=fase,
-        ambito=ambito,
-        descripcion=(payload.descripcion or "").strip() or None,
-        fecha_sesion=payload.fecha_sesion,
-    )
-    db.add(jugada)
-    db.flush()
-    _aplicar_contenido(db, jugada, piezas, pasos)
-    db.commit()
+    try:
+        jugada = models.Jugada(
+            id_equipo=equipo.id_equipo,
+            nombre=payload.nombre.strip(),
+            fase=fase,
+            ambito=ambito,
+            descripcion=(payload.descripcion or "").strip() or None,
+            fecha_sesion=payload.fecha_sesion,
+        )
+        db.add(jugada)
+        db.flush()
+        _aplicar_contenido(db, jugada, piezas, pasos)
+        db.commit()
+    except (IntegrityError, ProgrammingError) as exc:
+        db.rollback()
+        logger.exception("crear jugada SQL")
+        # Mensaje corto para el cliente; el detalle completo queda en logs de Render
+        orig = getattr(exc, "orig", None)
+        hint = str(orig or exc).split("\n")[0][:240]
+        raise HTTPException(status_code=500, detail=f"Error al guardar jugada: {hint}") from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("crear jugada")
+        raise HTTPException(status_code=500, detail="Error de base de datos al guardar la jugada") from exc
+
     loaded = _load(db, jugada.id_jugada, equipo.id_equipo)
     if not loaded:
         raise HTTPException(status_code=500, detail="Jugada creada pero no se pudo releer")
