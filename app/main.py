@@ -479,7 +479,7 @@ def health():
             conn.execute(text("SELECT 1"))
     except Exception:
         raise HTTPException(status_code=503, detail="database_unavailable") from None
-    return {"status": "ok", "database": "ok", "build": "cors-outer-1"}
+    return {"status": "ok", "database": "ok", "build": "jugada-balon-fk-1"}
 
 
 # CORS al final = middleware más externo: los 500 también llevan ACAO

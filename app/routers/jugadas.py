@@ -1,16 +1,12 @@
-import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
 from app.auth import get_current_session, AuthSession
 from app.database import get_db
 from app.permisos import AREA_LABELS
-
-logger = logging.getLogger("siete.jugadas")
 
 router = APIRouter(prefix="/jugadas", tags=["jugadas"])
 
@@ -193,27 +189,31 @@ def _aplicar_contenido(
         new_id = uuid.uuid4()
         if p.id_pieza:
             id_map[p.id_pieza] = new_id
+        color = (p.color or None) and str(p.color)[:20]
         pieza = models.JugadaPieza(
             id_pieza=new_id,
             id_jugada=jugada.id_jugada,
             etiqueta=p.etiqueta.strip()[:40] or f"P{i+1}",
-            color=p.color,
+            color=color,
             id_jugador=p.id_jugador,
             orden=p.orden if p.orden is not None else i,
         )
         db.add(pieza)
         jugada.piezas.append(pieza)
 
+    # Las piezas deben existir en BD antes de referenciarlas (id_pieza_balon / posiciones)
+    db.flush()
     pieza_ids = {pz.id_pieza for pz in jugada.piezas}
 
     for paso_in in sorted(pasos_in, key=lambda x: x.orden):
+        # Solo IDs remapeados: el UUID del cliente no existe en jugada_pieza
         balon_pieza = None
         if paso_in.id_pieza_balon:
-            balon_pieza = id_map.get(paso_in.id_pieza_balon, paso_in.id_pieza_balon)
-            if balon_pieza not in pieza_ids:
+            balon_pieza = id_map.get(paso_in.id_pieza_balon)
+            if balon_pieza is not None and balon_pieza not in pieza_ids:
                 balon_pieza = None
         paso = models.JugadaPaso(
-            id_paso=paso_in.id_paso or uuid.uuid4(),
+            id_paso=uuid.uuid4(),
             id_jugada=jugada.id_jugada,
             orden=paso_in.orden,
             titulo=(paso_in.titulo or "").strip() or None,
@@ -224,8 +224,8 @@ def _aplicar_contenido(
         db.add(paso)
         db.flush()
         for pos in paso_in.posiciones:
-            pid = id_map.get(pos.id_pieza, pos.id_pieza)
-            if pid not in pieza_ids:
+            pid = id_map.get(pos.id_pieza)
+            if pid is None or pid not in pieza_ids:
                 continue
             db.add(
                 models.JugadaPosicion(
@@ -236,8 +236,8 @@ def _aplicar_contenido(
                 )
             )
         for fle in paso_in.flechas:
-            pid = id_map.get(fle.id_pieza, fle.id_pieza)
-            if pid not in pieza_ids:
+            pid = id_map.get(fle.id_pieza)
+            if pid is None or pid not in pieza_ids:
                 continue
             tipo = fle.tipo if fle.tipo in ("movimiento", "pase", "lanzamiento") else "movimiento"
             db.add(
@@ -322,31 +322,18 @@ def crear(
     if not piezas or not pasos:
         piezas, pasos = _default_contenido(fase)
 
-    try:
-        jugada = models.Jugada(
-            id_equipo=equipo.id_equipo,
-            nombre=payload.nombre.strip(),
-            fase=fase,
-            ambito=ambito,
-            descripcion=(payload.descripcion or "").strip() or None,
-            fecha_sesion=payload.fecha_sesion,
-        )
-        db.add(jugada)
-        db.flush()
-        _aplicar_contenido(db, jugada, piezas, pasos)
-        db.commit()
-    except (IntegrityError, ProgrammingError) as exc:
-        db.rollback()
-        logger.exception("crear jugada SQL")
-        # Mensaje corto para el cliente; el detalle completo queda en logs de Render
-        orig = getattr(exc, "orig", None)
-        hint = str(orig or exc).split("\n")[0][:240]
-        raise HTTPException(status_code=500, detail=f"Error al guardar jugada: {hint}") from exc
-    except SQLAlchemyError as exc:
-        db.rollback()
-        logger.exception("crear jugada")
-        raise HTTPException(status_code=500, detail="Error de base de datos al guardar la jugada") from exc
-
+    jugada = models.Jugada(
+        id_equipo=equipo.id_equipo,
+        nombre=payload.nombre.strip(),
+        fase=fase,
+        ambito=ambito,
+        descripcion=(payload.descripcion or "").strip() or None,
+        fecha_sesion=payload.fecha_sesion,
+    )
+    db.add(jugada)
+    db.flush()
+    _aplicar_contenido(db, jugada, piezas, pasos)
+    db.commit()
     loaded = _load(db, jugada.id_jugada, equipo.id_equipo)
     if not loaded:
         raise HTTPException(status_code=500, detail="Jugada creada pero no se pudo releer")
