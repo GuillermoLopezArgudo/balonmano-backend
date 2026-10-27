@@ -331,6 +331,8 @@ def crear(
     _aplicar_contenido(db, jugada, piezas, pasos)
     db.commit()
     loaded = _load(db, jugada.id_jugada, equipo.id_equipo)
+    if not loaded:
+        raise HTTPException(status_code=500, detail="Jugada creada pero no se pudo releer")
     return _out(loaded)
 
 

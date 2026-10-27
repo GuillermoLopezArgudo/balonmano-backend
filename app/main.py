@@ -246,6 +246,27 @@ def ensure_schema() -> None:
         """,
         "ALTER TABLE equipo ADD COLUMN IF NOT EXISTS sesion_version INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE miembro_club ADD COLUMN IF NOT EXISTS sesion_version INTEGER NOT NULL DEFAULT 0",
+        """
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id_audit UUID PRIMARY KEY,
+            id_equipo UUID NOT NULL REFERENCES equipo(id_equipo) ON DELETE CASCADE,
+            id_miembro UUID REFERENCES miembro_club(id_miembro) ON DELETE SET NULL,
+            actor_nombre VARCHAR(150),
+            actor_correo VARCHAR(255),
+            accion VARCHAR(80) NOT NULL,
+            resumen VARCHAR(300) NOT NULL,
+            entidad VARCHAR(80),
+            id_entidad VARCHAR(80),
+            detalle TEXT,
+            ip VARCHAR(64),
+            user_agent VARCHAR(400),
+            creado_en TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_id_equipo ON audit_log (id_equipo)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_accion ON audit_log (accion)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_creado_en ON audit_log (creado_en)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_id_miembro ON audit_log (id_miembro)",
     ]
     failures = 0
     for stmt in stmts:
@@ -341,20 +362,16 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="SIETE Balonmano API", version="2.1.0", lifespan=lifespan)
 
-origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins or ["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 @app.middleware("http")
 async def audit_write_middleware(request: Request, call_next):
     """Registra mutaciones autenticadas exitosas (sin ruido de directo/health)."""
-    response: Response = await call_next(request)
+    try:
+        response: Response = await call_next(request)
+    except Exception:
+        # Dejar que ExceptionMiddleware / CORS (más externo) formateen el 500
+        logger.exception("error no controlado en %s %s", request.method, request.url.path)
+        raise
     try:
         method = request.method.upper()
         path = request.url.path
@@ -462,4 +479,17 @@ def health():
             conn.execute(text("SELECT 1"))
     except Exception:
         raise HTTPException(status_code=503, detail="database_unavailable") from None
-    return {"status": "ok", "database": "ok", "build": "lanz-fix-1"}
+    return {"status": "ok", "database": "ok", "build": "cors-outer-1"}
+
+
+# CORS al final = middleware más externo: los 500 también llevan ACAO
+# (si queda por dentro, el navegador reporta "CORS" y tapa el error real).
+origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins or ["http://localhost:5173"],
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
