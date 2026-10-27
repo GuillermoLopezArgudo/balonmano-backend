@@ -6,7 +6,7 @@ from app import models, schemas
 from app.auth import get_current_equipo
 from app.database import get_db
 from app.routers.jugadores import _jugador_out, _vinculo_equipo
-from app.routers.partidos import _partido_out
+from app.services.partidos_service import partido_out
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -174,8 +174,8 @@ def resumen(
         efectividad=efectividad,
         perdidas=perdidas,
         efectividad_por_posicion=efectividad_por_posicion,
-        ultimos_partidos=[_partido_out(p) for p in jugados[:5]],
-        proximos_partidos=[_partido_out(p) for p in proximos[:5]],
+        ultimos_partidos=[partido_out(p) for p in jugados[:5]],
+        proximos_partidos=[partido_out(p) for p in proximos[:5]],
         paradas=paradas,
         lanzamientos_recibidos=recibidos,
         goles_recibidos=goles_recibidos,

@@ -24,6 +24,9 @@ def _password_fuerte(v: str) -> str:
 PasswordNueva = Annotated[str, Field(min_length=8, max_length=128), AfterValidator(_password_fuerte)]
 
 
+# ——— Equipos y cuenta ———
+
+
 class DatosEquipoIn(BaseModel):
     nombre: str = Field(min_length=1, max_length=150)
     nombre_corto: str | None = Field(default=None, max_length=80)
@@ -75,6 +78,9 @@ class CuentaUpdate(BaseModel):
     entrenador_nombre: str | None = Field(default=None, max_length=150)
 
 
+# ——— Temporadas ———
+
+
 class TemporadaCreate(BaseModel):
     nombre: str = Field(min_length=1, max_length=100)
     fecha_inicio: date
@@ -112,6 +118,9 @@ class EquipoTemporadaOut(EquipoTemporadaCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+# ——— Catálogos ———
+
+
 class PosicionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -124,6 +133,9 @@ class TipoAccionOut(BaseModel):
 
     id_tipo_accion: int
     nombre: str
+
+
+# ——— Jugadores ———
 
 
 class JugadorCreate(BaseModel):
@@ -177,6 +189,10 @@ class JugadorOut(BaseModel):
     id_posicion: int | None = None
     activo: bool = True
     disponibilidad: str = "disponible"
+
+
+# ——— Partidos ———
+
 
 class PartidoCreate(BaseModel):
     """Crea un partido del club autenticado contra un rival propio."""
@@ -232,6 +248,9 @@ class PartidoOut(BaseModel):
     temporada_estado: str | None = None
 
 
+# ——— Rivales ———
+
+
 class RivalCreate(BaseModel):
     nombre: str = Field(min_length=1, max_length=150)
 
@@ -271,6 +290,9 @@ class RivalGoleadoraOut(BaseModel):
     zona_top: str | None = None
     zona_top_label: str | None = None
     zonas: dict[str, int] = {}
+
+
+# ——— Estadísticas de partido ———
 
 
 class EstadisticaJugadorCreate(BaseModel):
@@ -407,6 +429,9 @@ class ResumenJugador(BaseModel):
     pct_perdidas: float = 0.0
 
 
+# ——— Autenticación y sesión ———
+
+
 class LoginIn(BaseModel):
     correo: str
     password: str
@@ -486,6 +511,9 @@ class RegistroIn(BaseModel):
     temporada_fin: date | None = None
 
 
+# ——— Dashboard y detalle de jugador ———
+
+
 class DashboardOut(BaseModel):
     equipo_nombre: str
     partidos_jugados: int
@@ -543,6 +571,9 @@ ZONA_CAMPO_PATTERN = (
 )
 
 
+# ——— Convocatorias ———
+
+
 class ConvocatoriaItemIn(BaseModel):
     id_jugador: uuid.UUID
     rol: str = Field(default="convocado", pattern="^(convocado|titular|banquillo)$")
@@ -572,6 +603,9 @@ class ConvocatoriaOut(BaseModel):
 class ConvocatoriaPut(BaseModel):
     items: list[ConvocatoriaItemIn]
     estado: str = Field(default="borrador", pattern="^(borrador|guardada)$")
+
+
+# ——— Alineaciones ———
 
 
 class AlineacionItemIn(BaseModel):
@@ -607,6 +641,9 @@ class AlineacionOut(BaseModel):
     creado_en: datetime
     actualizado_en: datetime
     items: list[AlineacionItemOut] = []
+
+
+# ——— Miembros del cuerpo técnico ———
 
 
 class MiembroCreate(BaseModel):
@@ -756,6 +793,9 @@ class JugadaOut(BaseModel):
 
 class JugadaCopiarIn(BaseModel):
     nombre: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+# ——— Sesiones de entrenamiento y asistencia ———
 
 
 class SesionEntrenamientoCreate(BaseModel):
@@ -913,6 +953,9 @@ class PreparacionFisicaOut(BaseModel):
     intensidad: str | None = None
     creado_en: datetime
     actualizado_en: datetime
+
+
+# ——— Auditoría ———
 
 
 class AuditLogOut(BaseModel):
