@@ -468,9 +468,15 @@ def copiar(
     ambito = getattr(origen, "ambito", None) or "tactica"
     _assert_write(session, ambito)
 
-    if payload and payload.nombre:
+    # Copia = mismo contenido con «Nombre (copia)» (o «copia 2» si ya existe)
+    if payload and payload.nombre and payload.nombre.strip():
         nombre = payload.nombre.strip()[:120]
-        _assert_nombre_unico(db, equipo.id_equipo, nombre, origen.fase, ambito)
+        try:
+            _assert_nombre_unico(db, equipo.id_equipo, nombre, origen.fase, ambito)
+        except HTTPException:
+            nombre = _nombre_copia_libre(
+                db, equipo.id_equipo, origen.nombre, origen.fase, ambito
+            )
     else:
         nombre = _nombre_copia_libre(
             db, equipo.id_equipo, origen.nombre, origen.fase, ambito
