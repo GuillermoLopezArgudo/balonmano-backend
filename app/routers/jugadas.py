@@ -21,6 +21,65 @@ def _assert_write(session: AuthSession, ambito: str) -> None:
         )
 
 
+def _assert_nombre_unico(
+    db: Session,
+    id_equipo,
+    nombre: str,
+    fase: str,
+    ambito: str,
+    exclude_id=None,
+) -> None:
+    """Mismo nombre permitido entre ataque y defensa; no dentro del mismo estilo."""
+    nombre = (nombre or "").strip()
+    if not nombre:
+        raise HTTPException(status_code=400, detail="Nombre obligatorio")
+    q = db.query(models.Jugada).filter(
+        models.Jugada.id_equipo == id_equipo,
+        models.Jugada.ambito == ambito,
+        models.Jugada.fase == fase,
+        models.Jugada.nombre.ilike(nombre),
+    )
+    if exclude_id is not None:
+        q = q.filter(models.Jugada.id_jugada != exclude_id)
+    if q.first():
+        estilo = {
+            "ataque": "ataque",
+            "defensa": "defensa",
+            "completo": "campo completo",
+        }.get(fase, fase)
+        tipo = "entrenamiento" if ambito == "fisico" else "jugada"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ya existe una {tipo} de {estilo} con el nombre «{nombre}»",
+        )
+
+
+def _nombre_copia_libre(
+    db: Session,
+    id_equipo,
+    base: str,
+    fase: str,
+    ambito: str,
+) -> str:
+    base = (base or "Jugada").strip()[:100] or "Jugada"
+    for i in range(1, 50):
+        candidate = f"{base} (copia)" if i == 1 else f"{base} (copia {i})"
+        candidate = candidate[:120]
+        exists = (
+            db.query(models.Jugada)
+            .filter(
+                models.Jugada.id_equipo == id_equipo,
+                models.Jugada.ambito == ambito,
+                models.Jugada.fase == fase,
+                models.Jugada.nombre.ilike(candidate),
+            )
+            .first()
+        )
+        if not exists:
+            return candidate
+    return f"{base} ({uuid.uuid4().hex[:6]})"[:120]
+
+
 def _load(db: Session, id_jugada, id_equipo) -> models.Jugada | None:
     return (
         db.query(models.Jugada)
@@ -317,6 +376,9 @@ def crear(
     if ambito == "fisico" and not payload.fase:
         fase = "completo"
 
+    nombre = payload.nombre.strip()
+    _assert_nombre_unico(db, equipo.id_equipo, nombre, fase, ambito)
+
     piezas = payload.piezas
     pasos = payload.pasos
     if not piezas or not pasos:
@@ -324,7 +386,7 @@ def crear(
 
     jugada = models.Jugada(
         id_equipo=equipo.id_equipo,
-        nombre=payload.nombre.strip(),
+        nombre=nombre,
         fase=fase,
         ambito=ambito,
         descripcion=(payload.descripcion or "").strip() or None,
@@ -368,6 +430,16 @@ def actualizar(
     if "fecha_sesion" in payload.model_dump(exclude_unset=True):
         jugada.fecha_sesion = payload.fecha_sesion
 
+    if payload.nombre is not None or payload.fase is not None or payload.ambito is not None:
+        _assert_nombre_unico(
+            db,
+            equipo.id_equipo,
+            jugada.nombre,
+            jugada.fase,
+            getattr(jugada, "ambito", None) or "tactica",
+            exclude_id=jugada.id_jugada,
+        )
+
     if payload.piezas is not None and payload.pasos is not None:
         _aplicar_contenido(db, jugada, payload.piezas, payload.pasos)
     elif payload.piezas is not None or payload.pasos is not None:
@@ -396,7 +468,13 @@ def copiar(
     ambito = getattr(origen, "ambito", None) or "tactica"
     _assert_write(session, ambito)
 
-    nombre = (payload.nombre if payload and payload.nombre else None) or f"{origen.nombre} (copia)"
+    if payload and payload.nombre:
+        nombre = payload.nombre.strip()[:120]
+        _assert_nombre_unico(db, equipo.id_equipo, nombre, origen.fase, ambito)
+    else:
+        nombre = _nombre_copia_libre(
+            db, equipo.id_equipo, origen.nombre, origen.fase, ambito
+        )
     full = _out(origen)
 
     piezas_in = [
